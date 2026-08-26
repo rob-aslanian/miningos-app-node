@@ -384,6 +384,28 @@ test('handlers: registerSparePart fires part + Type-1 WO pushActions in parallel
   t.is(out.expectedActionLatencyMs, 1000, 'defaults when conf omits expectedActionLatencyMs')
 })
 
+test('handlers: registerSparePart stamps assignedTo on the register WO when provided', async (t) => {
+  const { ctx, pushed } = buildRegisterCtx()
+  await handlers.registerSparePart(ctx, {
+    ...userMeta(),
+    body: { rackId: PART_RACK, info: { deviceType: 'psu', deviceModel: 'PSU-A', serialNum: 'SN-99', assignedTo: 'tech@site.com' } }
+  })
+
+  const woAction = pushed.find(p => p.params[0].rackId === WO_RACK)
+  t.is(woAction.params[0].info.assignedTo, 'tech@site.com')
+})
+
+test('handlers: registerSparePart omits assignedTo from the register WO when not provided', async (t) => {
+  const { ctx, pushed } = buildRegisterCtx()
+  await handlers.registerSparePart(ctx, {
+    ...userMeta(),
+    body: { rackId: PART_RACK, info: { deviceType: 'psu', deviceModel: 'PSU-A', serialNum: 'SN-99' } }
+  })
+
+  const woAction = pushed.find(p => p.params[0].rackId === WO_RACK)
+  t.absent(woAction.params[0].info.assignedTo)
+})
+
 test('handlers: registerSparePart surfaces ork-side errors in the response', async (t) => {
   const { ctx } = buildRegisterCtx({ pushResult: { id: null, errors: ['ERR_RACK_DOWN'] } })
   const out = await handlers.registerSparePart(ctx, {
@@ -429,6 +451,23 @@ test('handlers: registerSparePartsBatch creates one shared register WO carrying 
   t.is(out.parts.length, 3, 'returns a result row per part')
   t.alike(out.errors, [], 'no errors on happy path')
   t.is(out.expectedActionLatencyMs, 1000, 'defaults when conf omits expectedActionLatencyMs')
+})
+
+test('handlers: registerSparePartsBatch stamps assignedTo on the shared register WO from the first part', async (t) => {
+  const { ctx, pushed } = buildRegisterCtx()
+  await handlers.registerSparePartsBatch(ctx, {
+    ...userMeta(),
+    body: {
+      rackId: PART_RACK,
+      parts: [
+        { deviceType: 'psu', deviceModel: 'PSU-A', serialNum: 'SN-1', assignedTo: 'tech@site.com' },
+        { deviceType: 'psu', deviceModel: 'PSU-A', serialNum: 'SN-2', assignedTo: 'tech@site.com' }
+      ]
+    }
+  })
+
+  const woAction = pushed.find(p => p.params[0].rackId === WO_RACK)
+  t.is(woAction.params[0].info.assignedTo, 'tech@site.com')
 })
 
 test('handlers: spare-part writes echo expectedActionLatencyMs from conf', async (t) => {
@@ -477,18 +516,27 @@ test('handlers: registerSparePartsBatch rejects the whole batch if any part is i
   t.is(pushed.length, 0, 'nothing pushed when any part fails validation')
 })
 
-function listFlow ({ items = [], total = 0 } = {}) {
-  let lastList, lastCount
+function listFlow ({ items = [], total = 0, workOrders = [] } = {}) {
+  const listCalls = []
+  let lastCount
   const handler = async (_key, method, params) => {
-    if (method === 'listThings') { lastList = params; return items }
+    if (method === 'listThings') {
+      listCalls.push(params)
+      return params.query?.type === 'inventory-work_order' ? workOrders : items
+    }
     if (method === 'getThingsCount') { lastCount = params; return total }
     return null
   }
   const ctx = createMockCtxWithOrks([{ rpcPublicKey: 'k' }], handler)
   return {
     ctx,
-    get lastList () { return lastList },
-    get lastCount () { return lastCount }
+    get lastList () {
+      return listCalls.find(c => c.query?.type !== 'inventory-work_order') ?? listCalls[0]
+    },
+    get lastCount () { return lastCount },
+    get linkedWoLookupCall () {
+      return listCalls.find(c => c.query?.type === 'inventory-work_order')
+    }
   }
 }
 
@@ -531,6 +579,49 @@ test('handlers: listSpareParts ?q escapes regex metacharacters', async (t) => {
   const flow = listFlow()
   await handlers.listSpareParts(flow.ctx, { query: { q: 'a.b+c*' } })
   t.is(flow.lastList.query.$or[0].code.$regex, 'a\\.b\\+c\\*')
+})
+
+test('handlers: listSpareParts stamps linkedWoCount from distinct WOs referencing each part', async (t) => {
+  const flow = listFlow({
+    items: [{ id: 'p1' }, { id: 'p2' }],
+    total: 2,
+    workOrders: [
+      { id: 'wo-1', info: { partsMoves: [{ partId: 'p1' }, { partId: 'p2' }] } },
+      { id: 'wo-2', info: { partsMoves: [{ partId: 'p1' }] } }
+    ]
+  })
+  const out = await handlers.listSpareParts(flow.ctx, { query: {} })
+  t.is(out.data.find(p => p.id === 'p1').linkedWoCount, 2)
+  t.is(out.data.find(p => p.id === 'p2').linkedWoCount, 1)
+})
+
+test('handlers: listSpareParts counts a part once per WO even if it appears in multiple moves within it', async (t) => {
+  const flow = listFlow({
+    items: [{ id: 'p1' }],
+    total: 1,
+    workOrders: [{ id: 'wo-1', info: { partsMoves: [{ partId: 'p1' }, { partId: 'p1' }] } }]
+  })
+  const out = await handlers.listSpareParts(flow.ctx, { query: {} })
+  t.is(out.data[0].linkedWoCount, 1)
+})
+
+test('handlers: listSpareParts defaults linkedWoCount to 0 when no WO references the part', async (t) => {
+  const flow = listFlow({ items: [{ id: 'p1' }], total: 1, workOrders: [] })
+  const out = await handlers.listSpareParts(flow.ctx, { query: {} })
+  t.is(out.data[0].linkedWoCount, 0)
+})
+
+test('handlers: listSpareParts scopes the WO lookup to exactly the ids on this page', async (t) => {
+  const flow = listFlow({ items: [{ id: 'p1' }, { id: 'p2' }], total: 2 })
+  await handlers.listSpareParts(flow.ctx, { query: {} })
+  t.alike(flow.linkedWoLookupCall.query['info.partsMoves.partId'], { $in: ['p1', 'p2'] })
+})
+
+test('handlers: listSpareParts skips the linked-WO lookup entirely when the page is empty', async (t) => {
+  const flow = listFlow({ items: [], total: 0 })
+  const out = await handlers.listSpareParts(flow.ctx, { query: {} })
+  t.alike(out.data, [])
+  t.is(flow.linkedWoLookupCall, undefined)
 })
 
 test('handlers: listSpareParts ANDs location/status/q in a single query payload', async (t) => {
