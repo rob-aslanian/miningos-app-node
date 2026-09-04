@@ -11,8 +11,12 @@ const {
   voteAction,
   cancelActionsBatch
 } = require('../../../workers/lib/server/handlers/actions.handlers')
-const { APPROVED_POOL_URLS } = require('../../../workers/lib/constants')
 const { createMockCtxWithOrks, createMockReq, withDataProxy } = require('../helpers/mockHelpers')
+
+const APPROVED_POOL_URLS = [
+  { id: 'pool-1', host: 'pool.example.com', port: 3333, name: 'Example Pool' },
+  { id: 'pool-2', host: 'backup.example.com', port: 4444, name: 'Backup Pool' }
+]
 
 test('queryActionsBatch - basic functionality', async (t) => {
   const mockCtx = createMockCtxWithOrks(
@@ -319,6 +323,103 @@ for (const action of ['registerConfig', 'updateConfig']) {
       t.is(resolved.workerName, `${approved.id}-worker`, 'workerName should pass through from the request')
       t.is(resolved.workerPassword, 'x', 'workerPassword should pass through from the request')
     })
+
+    t.pass()
+  })
+
+  test(`pushAction - ${action} does not double-prefix a host that already includes the pool protocol`, async (t) => {
+    let capturedPayload = null
+    const prefixedPoolUrl = { id: 'pool-prefixed', host: 'stratum+tcp://already-prefixed.example.com', port: 3333, name: 'Prefixed Pool' }
+    const mockCtx = withDataProxy({
+      conf: { orks: [{ rpcPublicKey: 'key1' }] },
+      authLib: {
+        getTokenPerms: async () => ({ write: true, permissions: ['actions:write'] })
+      },
+      net_r0: {
+        jRequest: async (key, method, payload, opts) => {
+          if (method === 'getGlobalConfig') {
+            return { approvedPoolUrls: [prefixedPoolUrl] }
+          }
+          capturedPayload = payload
+          return { id: 'new-action', success: true }
+        }
+      }
+    })
+
+    const mockReq = {
+      _info: {
+        authToken: 'token123',
+        user: { metadata: { email: 'test@example.com' } }
+      },
+      body: {
+        action,
+        params: [{
+          name: 'my-config',
+          data: {
+            poolUrls: [{
+              poolUrlId: prefixedPoolUrl.id,
+              workerName: 'worker1',
+              workerPassword: 'x'
+            }]
+          }
+        }]
+      }
+    }
+
+    await pushAction(mockCtx, mockReq)
+
+    const [poolConfig] = capturedPayload.params
+    const [resolved] = poolConfig.data.poolUrls
+    t.is(resolved.url, `${prefixedPoolUrl.host}:${prefixedPoolUrl.port}`, 'url should not have the protocol prepended twice')
+    t.absent(resolved.url.startsWith('stratum+tcp://stratum+tcp://'), 'url should not contain a doubled protocol')
+
+    t.pass()
+  })
+
+  test(`pushAction - ${action} adds the pool protocol when the host does not already include it`, async (t) => {
+    let capturedPayload = null
+    const mockCtx = withDataProxy({
+      conf: { orks: [{ rpcPublicKey: 'key1' }] },
+      authLib: {
+        getTokenPerms: async () => ({ write: true, permissions: ['actions:write'] })
+      },
+      net_r0: {
+        jRequest: async (key, method, payload, opts) => {
+          if (method === 'getGlobalConfig') {
+            return { approvedPoolUrls: APPROVED_POOL_URLS }
+          }
+          capturedPayload = payload
+          return { id: 'new-action', success: true }
+        }
+      }
+    })
+
+    const approved = APPROVED_POOL_URLS[0]
+    const mockReq = {
+      _info: {
+        authToken: 'token123',
+        user: { metadata: { email: 'test@example.com' } }
+      },
+      body: {
+        action,
+        params: [{
+          name: 'my-config',
+          data: {
+            poolUrls: [{
+              poolUrlId: approved.id,
+              workerName: 'worker1',
+              workerPassword: 'x'
+            }]
+          }
+        }]
+      }
+    }
+
+    await pushAction(mockCtx, mockReq)
+
+    const [poolConfig] = capturedPayload.params
+    const [resolved] = poolConfig.data.poolUrls
+    t.is(resolved.url, `stratum+tcp://${approved.host}:${approved.port}`, 'url should be prefixed with the pool protocol')
 
     t.pass()
   })

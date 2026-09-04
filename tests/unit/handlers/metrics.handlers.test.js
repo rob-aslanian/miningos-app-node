@@ -5,6 +5,7 @@ const {
   getHashrate,
   calculateHashrateSummary,
   getConsumption,
+  rollupMonthly,
   calculateConsumptionSummary,
   calculateByMeterConsumptionSummary,
   calculateGroupedConsumptionSummary,
@@ -470,6 +471,90 @@ test('getHashrate - interval selects the bucket range', async (t) => {
   t.pass()
 })
 
+test('getHashrate - pool=true merges pool hashrate per bucket, in MH/s', async (t) => {
+  let capturedExtData = null
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        if (method === 'getWrkExtData') {
+          capturedExtData = payload
+          return [
+            // First bucket: account a averages (100e6 + 200e6) / 2, account b adds 50e6
+            { ts: 1700006460000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 100e6 }] },
+            { ts: 1700006760000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 200e6 }, { poolType: 'ocean', username: 'b', hashrate: 50e6 }] }
+            // Second bucket: no samples
+          ]
+        }
+        return [
+          { ts: 1700006400000, hashrate_mhs_5m_sum_aggr: 100000 },
+          { ts: 1700092800000, hashrate_mhs_5m_sum_aggr: 120000 }
+        ]
+      }
+    }
+  })
+
+  const result = await getHashrate(mockCtx, {
+    query: { start: 1700000000000, end: 1700100000000, pool: true }
+  })
+
+  t.is(capturedExtData.type, 'minerpool', 'should query the minerpool workers')
+  t.is(capturedExtData.query.key, 'stats-history', 'should read the raw stats snapshots')
+  t.is(capturedExtData.query.start, 1700000000000, 'should cover the requested range')
+  t.is(capturedExtData.query.end, 1700100000000, 'should cover the requested range')
+  t.ok(capturedExtData.query.fields, 'should ship a rack-side projection to bound the payload')
+  t.is(result.log[0].poolHashrateMhs, 200, 'per-account averages summed, H/s converted to MH/s')
+  t.is(result.log[1].poolHashrateMhs, null, 'bucket without pool samples is null')
+  t.is(result.summary.avgPoolHashrateMhs, 200, 'summary averages only buckets with pool data')
+  t.pass()
+})
+
+test('getHashrate - pool samples outside the bucket window are excluded', async (t) => {
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method) => {
+        if (method === 'getWrkExtData') {
+          return [
+            { ts: 1700006400000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 100e6 }] },
+            { ts: 1700006400000 + 3600000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 900e6 }] }
+          ]
+        }
+        return [{ ts: '1700006400000-1700009999999', hashrate_mhs_5m_sum_aggr: 100000 }]
+      }
+    }
+  })
+
+  const result = await getHashrate(mockCtx, {
+    query: { start: 1700000000000, end: 1700100000000, pool: true }
+  })
+
+  t.is(result.log[0].poolHashrateMhs, 100, 'only the sample inside the bucket timeRange counts')
+  t.pass()
+})
+
+test('getHashrate - without pool flag the response is unchanged', async (t) => {
+  const methods = []
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method) => {
+        methods.push(method)
+        return [{ ts: 1700006400000, hashrate_mhs_5m_sum_aggr: 100000 }]
+      }
+    }
+  })
+
+  const result = await getHashrate(mockCtx, {
+    query: { start: 1700000000000, end: 1700100000000 }
+  })
+
+  t.absent(methods.includes('getWrkExtData'), 'should not query the minerpool workers')
+  t.absent('poolHashrateMhs' in result.log[0], 'entries carry no pool field')
+  t.absent('avgPoolHashrateMhs' in result.summary, 'summary carries no pool field')
+  t.pass()
+})
+
 test('calculateHashrateSummary - calculates from log entries', (t) => {
   const log = [
     { ts: 1700006400000, hashrateMhs: 100000 },
@@ -904,11 +989,11 @@ test('getConsumption - byMeter applies the 1M interval to the ork query and MWh 
   })
 
   t.is(capturedPayload.key, 'stat-3h', 'monthly interval tails the 3h stat log')
-  t.is(capturedPayload.groupRange, '1M', 'and buckets into 1-month windows')
-  t.is(result.log.length, 2, 'one log entry per monthly bucket')
-  t.alike(result.log[0].consumptionMWh, { 'PM-1': 720 }, '1 MW over a 720h bucket is 720 MWh')
-  t.alike(result.log[1].consumptionMWh, { 'PM-1': 1440 }, '2 MW over a 720h bucket is 1440 MWh')
-  t.is(result.summary.groupedBy['PM-1'].totalConsumptionMWh, 2160, 'PM-1 consumption sums both monthly buckets')
+  t.is(capturedPayload.groupRange, '1D', 'via daily buckets, rolled up per calendar month')
+  t.is(result.log.length, 2, 'one log entry per calendar month')
+  t.alike(result.log[0].consumptionMWh, { 'PM-1': 24 }, 'November holds its single covered day, not a full 720h')
+  t.alike(result.log[1].consumptionMWh, { 'PM-1': 48 }, 'December likewise')
+  t.is(result.summary.groupedBy['PM-1'].totalConsumptionMWh, 72, 'PM-1 consumption sums both monthly buckets')
   t.pass()
 })
 
@@ -932,12 +1017,12 @@ test('getConsumption - site power applies the 1M interval to the ork query and M
   })
 
   t.is(capturedPayload.key, 'stat-3h', 'monthly interval tails the 3h stat log')
-  t.is(capturedPayload.groupRange, '1M', 'and buckets into 1-month windows')
-  t.is(result.log.length, 2, 'one entry per monthly bucket')
-  t.is(result.log[0].consumptionMWh, 1440, '2 MW over a 720h bucket is 1440 MWh')
-  t.is(result.log[1].consumptionMWh, 720, '1 MW over a 720h bucket is 720 MWh')
+  t.is(capturedPayload.groupRange, '1D', 'via daily buckets, rolled up per calendar month')
+  t.is(result.log.length, 2, 'one entry per calendar month')
+  t.is(result.log[0].consumptionMWh, 48, 'November holds its single covered day, not a full 720h')
+  t.is(result.log[1].consumptionMWh, 24, 'December likewise')
   t.is(result.summary.avgPowerW, 1500000, 'summary averages power across both monthly buckets')
-  t.is(result.summary.totalConsumptionMWh, 2160, 'summary sums consumption across both buckets')
+  t.is(result.summary.totalConsumptionMWh, 72, 'summary sums consumption across both buckets')
   t.pass()
 })
 
@@ -1943,6 +2028,59 @@ test('processMinerStatusData - handles entries with aggrFields wrapper', (t) => 
   t.is(daily[key].offline, 10, 'should extract from aggrFields wrapper')
   t.is(daily[key].sleep, 5, 'should extract sleep from aggrFields')
   t.is(daily[key].maintenance, 3, 'should extract maintenance from aggrFields')
+  t.pass()
+})
+
+test('processMinerStatusData - averages the day snapshots, absent statuses count as zero', (t) => {
+  const dayStart = 1700006400000
+  const threeHours = 3 * 60 * 60 * 1000
+  // 4 snapshots in the same day; miners offline in only one of them
+  const results = [[
+    { ts: dayStart, type_cnt: { m50: 100 } },
+    { ts: dayStart + threeHours, type_cnt: { m50: 100 } },
+    { ts: dayStart + 2 * threeHours, type_cnt: { m50: 100 } },
+    { ts: dayStart + 3 * threeHours, type_cnt: { m50: 100 }, offline_cnt: { 'container-1a': 8 } }
+  ]]
+
+  const daily = processMinerStatusData(results)
+  t.is(daily[dayStart].offline, 2, 'offline should average over all snapshots (8/4), not only where present')
+  t.is(daily[dayStart].online, 98, 'online should reflect the averaged offline count')
+  t.pass()
+})
+
+test('processMinerStatusData - averages snapshots per day across multiple orks', (t) => {
+  const dayStart = 1700006400000
+  const threeHours = 3 * 60 * 60 * 1000
+  // two orks, two shared snapshot ticks: counts sum across orks, then average over ticks
+  const results = [
+    [
+      { ts: dayStart, type_cnt: { m50: 60 }, offline_cnt: { 'container-1a': 4 } },
+      { ts: dayStart + threeHours, type_cnt: { m50: 60 } }
+    ],
+    [
+      { ts: dayStart, type_cnt: { m30: 40 }, offline_cnt: { 'container-2b': 2 } },
+      { ts: dayStart + threeHours, type_cnt: { m30: 40 } }
+    ]
+  ]
+
+  const daily = processMinerStatusData(results)
+  t.is(daily[dayStart].offline, 3, 'offline should be the fleet sum per tick averaged over ticks ((4+2)/2)')
+  t.is(daily[dayStart].online, 97, 'online should derive from the averaged totals (100-3)')
+  t.pass()
+})
+
+test('processGroupedMinerStatusData - averages the day snapshots per type', (t) => {
+  const dayStart = 1700006400000
+  const threeHours = 3 * 60 * 60 * 1000
+  const results = [[
+    { ts: dayStart, type_cnt: { m50: 100, s19: 50 } },
+    { ts: dayStart + threeHours, type_cnt: { m50: 100, s19: 50 }, offline_type_cnt: { m50: 10 } }
+  ]]
+
+  const daily = processGroupedMinerStatusData(results)
+  t.is(daily[dayStart].offline.m50, 5, 'per-type offline should average over all snapshots (10/2)')
+  t.is(daily[dayStart].online.m50, 95, 'per-type online should reflect the averaged offline')
+  t.is(daily[dayStart].online.s19, 50, 'types without offline snapshots stay fully online')
   t.pass()
 })
 
@@ -3428,6 +3566,7 @@ test('processPowerModeTimelineData - handles non-object powerModeObj', (t) => {
 
 const RANGE_TS = '1770854400000-1771459199999'
 const RANGE_START = 1770854400000
+const DAY_MS = 24 * 60 * 60 * 1000
 
 test('getHashrate - normalizes a grouped range-string ts to its start', async (t) => {
   const mockCtx = withDataProxy({
@@ -3580,11 +3719,11 @@ test('getEfficiency - central DCS path normalizes range ts and exposes timeRange
   t.is(result.log[0].efficiencyWThs, 50, 'efficiency should join power and hashrate on the same bucket')
 })
 
-test('getMinerStatus - exposes the aggregation window as timeRange', async (t) => {
+test('getMinerStatus - exposes the day window as timeRange', async (t) => {
   const mockCtx = withDataProxy({
     conf: { orks: [{ rpcPublicKey: 'key1' }] },
     net_r0: {
-      jRequest: async () => [{ ts: RANGE_TS, type_cnt: { m50: 10 }, offline_cnt: { m50: 2 } }]
+      jRequest: async () => [{ ts: RANGE_START, type_cnt: { m50: 10 }, offline_cnt: { m50: 2 } }]
     }
   })
 
@@ -3592,15 +3731,15 @@ test('getMinerStatus - exposes the aggregation window as timeRange', async (t) =
     query: { start: 1770854400000, end: 1771459199999 }
   })
 
-  t.alike(result.log[0].timeRange, { startTs: RANGE_START, endTs: RANGE_END }, 'timeRange should cover the full window')
+  t.alike(result.log[0].timeRange, { startTs: RANGE_START, endTs: RANGE_START + DAY_MS - 1 }, 'timeRange should cover the day')
   t.is(result.log[0].online, 8, 'counts should be preserved')
 })
 
-test('processGroupedMinerStatusData - exposes the aggregation window as timeRange', (t) => {
-  const daily = processGroupedMinerStatusData([[{ ts: RANGE_TS, type_cnt: { m50: 10 }, offline_type_cnt: { m50: 2 } }]])
+test('processGroupedMinerStatusData - exposes the day window as timeRange', (t) => {
+  const daily = processGroupedMinerStatusData([[{ ts: RANGE_START, type_cnt: { m50: 10 }, offline_type_cnt: { m50: 2 } }]])
 
   const bucket = daily[RANGE_START]
-  t.alike(bucket.timeRange, { startTs: RANGE_START, endTs: RANGE_END }, 'timeRange should cover the full window')
+  t.alike(bucket.timeRange, { startTs: RANGE_START, endTs: RANGE_START + DAY_MS - 1 }, 'timeRange should cover the day')
 })
 
 test('getPowerMode - exposes the aggregation window as timeRange on grouped buckets', async (t) => {
@@ -3985,4 +4124,34 @@ test('getHashrate - grouped results are paged the same way', async (t) => {
   t.is(result.totalCount, 5)
   t.is(result.log.length, 2, 'grouped log honours offset')
   t.pass()
+})
+
+test('rollupMonthly - one bucket per calendar month, energy is the daily sum', (t) => {
+  const day = 86400000
+  const jul31 = Date.UTC(2026, 6, 31)
+  const daily = [
+    { ts: Date.UTC(2026, 6, 1), powerW: 10, consumptionMWh: 0.24 },
+    { ts: jul31, powerW: 20, consumptionMWh: 0.48 },
+    { ts: jul31 + day, powerW: 30, consumptionMWh: 0.72 }
+  ]
+
+  const log = rollupMonthly(daily)
+
+  t.is(log.length, 2, 'July and August, no epoch straddle')
+  t.is(log[0].ts, Date.UTC(2026, 6, 1), 'first bucket starts at the calendar month')
+  t.is(log[0].timeRange.endTs, Date.UTC(2026, 7, 1) - 1, 'ends at the last ms of the month')
+  t.is(log[0].consumptionMWh, 0.72, 'July energy is the sum of its 2 covered days, not 31 extrapolated')
+  t.is(log[0].powerW, 15, 'power averages over the covered days only')
+  t.is(log[1].consumptionMWh, 0.72, 'August energy')
+})
+
+test('rollupMonthly - per-meter maps roll up meter by meter', (t) => {
+  const log = rollupMonthly([
+    { ts: Date.UTC(2026, 6, 1), powerW: { a: 10, b: 4 }, consumptionMWh: { a: 0.24, b: 0.096 } },
+    { ts: Date.UTC(2026, 6, 2), powerW: { a: 20 }, consumptionMWh: { a: 0.48 } }
+  ])
+
+  t.is(log.length, 1, 'single month')
+  t.alike(log[0].consumptionMWh, { a: 0.72, b: 0.096 }, 'energy summed per meter')
+  t.alike(log[0].powerW, { a: 15, b: 2 }, 'power averaged over the month days')
 })

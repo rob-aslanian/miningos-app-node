@@ -766,7 +766,8 @@ const PERIOD_TYPES = {
 
 const MINERPOOL_EXT_DATA_KEYS = {
   TRANSACTIONS: 'transactions',
-  STATS: 'stats'
+  STATS: 'stats',
+  STATS_HISTORY: 'stats-history'
 }
 
 const ELECTRICITY_EXT_DATA_KEYS = {
@@ -1212,6 +1213,8 @@ const CUSTOM_ALERT_CONFIG = {
   }
 }
 
+const POOL_PROTOCOL = 'stratum+tcp'
+
 module.exports = {
   SUPER_ADMIN_ROLE,
   GLOBAL_DATA_TYPES,
@@ -1319,5 +1322,6 @@ module.exports = {
   RMA_COLUMNS,
   MINER_MODEL_DISPLAY_NAMES,
   MICROSOFT_AUTH_SCOPE,
-  CUSTOM_ALERT_CONFIG
+  CUSTOM_ALERT_CONFIG,
+  POOL_PROTOCOL
 }
