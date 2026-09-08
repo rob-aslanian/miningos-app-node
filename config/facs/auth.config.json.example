@@ -5,6 +5,7 @@
     "superAdminPerms": [
       "miner:rw",
       "container:rw",
+      "dcs:rw",
       "minerpool:rw",
       "powermeter:rw",
       "temp:rw",
@@ -36,6 +37,7 @@
       "admin": [
         "miner:rw",
         "container:rw",
+        "dcs:rw",
         "minerpool:rw",
         "powermeter:rw",
         "temp:rw",
@@ -66,6 +68,7 @@
       "admin_external": [
         "miner:r",
         "container:r",
+        "dcs:r",
         "minerpool:r",
         "powermeter:r",
         "temp:r",
@@ -105,6 +108,7 @@
       "site_manager": [
         "miner:rw",
         "container:rw",
+        "dcs:rw",
         "minerpool:rw",
         "powermeter:rw",
         "temp:rw",
@@ -134,6 +138,7 @@
       "site_operator": [
         "miner:rw",
         "container:rw",
+        "dcs:rw",
         "minerpool:rw",
         "powermeter:rw",
         "temp:rw",
@@ -147,11 +152,13 @@
         "ticket:rw",
         "alerts:rw",
         "work_order:rw",
-        "forecast_summary:r"
+        "forecast_summary:r",
+        "pool_config:r"
       ],
       "field_operator": [
         "miner:r",
         "container:r",
+        "dcs:r",
         "minerpool:r",
         "powermeter:r",
         "temp:r",
@@ -168,6 +175,7 @@
       "repair_technician": [
         "miner:r",
         "container:r",
+        "dcs:r",
         "minerpool:r",
         "powermeter:r",
         "temp:r",
@@ -185,6 +193,7 @@
       "read_only_user": [
         "miner:r",
         "container:r",
+        "dcs:r",
         "minerpool:r",
         "powermeter:r",
         "temp:r",

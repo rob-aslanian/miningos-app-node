@@ -72,6 +72,67 @@ test('constants - CUSTOM_ALERT_CONFIG', (t) => {
   t.pass()
 })
 
+test('constants - CUSTOM_ALERT_CONFIG dcs sensor alerts', (t) => {
+  const dcsSensorFields = {
+    'custom.temperature.warning': ['maxTempC'],
+    'custom.temperature.critical': ['maxTempC'],
+    'custom.pressure.warning': ['maxPressureBar'],
+    'custom.pressure.critical': ['maxPressureBar'],
+    'custom.flow.warning': ['minFlowM3h'],
+    'custom.flow.critical': ['minFlowM3h'],
+    'custom.level.warning': ['minLevelPct'],
+    'custom.level.critical': ['minLevelPct'],
+    'custom.speed.warning': ['minSpeedHz', 'maxSpeedHz'],
+    'custom.speed.critical': ['minSpeedHz', 'maxSpeedHz'],
+    'custom.fancoil_temperature.warning': ['minTempC', 'maxTempC'],
+    'custom.fancoil_temperature.critical': ['minTempC', 'maxTempC'],
+    'custom.vibration.warning': ['onError'],
+    'custom.vibration.critical': ['onError']
+  }
+
+  for (const [key, fields] of Object.entries(dcsSensorFields)) {
+    const conf = CUSTOM_ALERT_CONFIG[key]
+    t.ok(conf, `${key} should be defined`)
+    t.alike(conf.rackTypes, ['dcs'], `${key} should only apply to dcs rack type`)
+    for (const field of fields) {
+      t.ok(conf.configSchema[field], `${key} configSchema should declare ${field}`)
+    }
+  }
+
+  t.pass()
+})
+
+test('constants - CUSTOM_ALERT_CONFIG miner alerts', (t) => {
+  const minerFields = {
+    'custom.chip_temp.warning': ['lowTemp', 'normalTemp', 'highTemp'],
+    'custom.chip_temp.critical': ['lowTemp', 'normalTemp', 'highTemp'],
+    'custom.low_power.warning': ['lowPower'],
+    'custom.low_power.critical': ['lowPower'],
+    'custom.high_efficiency.warning': ['highEfficiency'],
+    'custom.high_efficiency.critical': ['highEfficiency'],
+    'custom.wrong_miner_pool.warning': [],
+    'custom.wrong_miner_pool.critical': [],
+    'custom.wrong_miner_subaccount.warning': [],
+    'custom.wrong_miner_subaccount.critical': [],
+    'custom.wrong_worker_name.warning': [],
+    'custom.wrong_worker_name.critical': [],
+    'custom.ip_worker_name.warning': [],
+    'custom.ip_worker_name.critical': []
+  }
+
+  for (const [key, fields] of Object.entries(minerFields)) {
+    const conf = CUSTOM_ALERT_CONFIG[key]
+    t.ok(conf, `${key} should be defined`)
+    t.alike(conf.rackTypes, ['miner'], `${key} should only apply to miner rack type`)
+    for (const field of fields) {
+      t.ok(conf.configSchema[field], `${key} configSchema should declare ${field}`)
+    }
+    t.ok(conf.configSchema.notes && conf.configSchema.notes.type === 'string', `${key} configSchema should declare notes`)
+  }
+
+  t.pass()
+})
+
 test('constants - POOL_PROTOCOL', (t) => {
   t.is(POOL_PROTOCOL, 'stratum+tcp', 'should be stratum+tcp')
   t.ok(typeof POOL_PROTOCOL === 'string', 'should be string')
@@ -294,4 +355,13 @@ test('constants - COMMENT_ACTION values are strings', (t) => {
   })
 
   t.pass()
+})
+
+test('every fixed-width stat key has a bucket width for the range guard', (t) => {
+  const { LOG_KEYS, TAIL_LOG_BUCKET_MS, TAIL_LOG_UNBUCKETED_KEYS } = require('../../../workers/lib/constants')
+
+  for (const key of Object.values(LOG_KEYS)) {
+    t.ok(TAIL_LOG_BUCKET_MS[key] || TAIL_LOG_UNBUCKETED_KEYS.has(key), `${key} is range checkable`)
+  }
+  t.is(TAIL_LOG_BUCKET_MS[LOG_KEYS.STAT_POSITION_1D], 24 * 60 * 60 * 1000)
 })

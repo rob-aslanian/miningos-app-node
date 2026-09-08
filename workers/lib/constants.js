@@ -454,7 +454,8 @@ const LOG_KEYS = {
   STAT_3H: 'stat-3h',
   STAT_5M: 'stat-5m',
   STAT_30M: 'stat-30m',
-  STAT_1D: 'stat-1D'
+  STAT_1D: 'stat-1D',
+  STAT_POSITION_1D: 'stat-position-1D'
 }
 
 const WORKER_TAGS = {
@@ -730,6 +731,7 @@ const AGGR_FIELDS = {
   TEMP_MAX: 'temperature_c_group_max_aggr',
   TEMP_AVG: 'temperature_c_group_avg_aggr',
   TYPE_CNT: 'type_cnt',
+  MINING_CNT: 'online_or_minor_error_miners_amount_aggr',
   OFFLINE_CNT: 'offline_cnt',
   SLEEP_CNT: 'power_mode_sleep_cnt',
   MAINTENANCE_CNT: 'maintenance_type_cnt',
@@ -858,7 +860,8 @@ const TAIL_LOG_BUCKET_MS = {
   'stat-5m': 5 * 60 * 1000,
   'stat-30m': 30 * 60 * 1000,
   'stat-3h': 3 * 60 * 60 * 1000,
-  'stat-1D': 24 * 60 * 60 * 1000
+  'stat-1D': 24 * 60 * 60 * 1000,
+  'stat-position-1D': 24 * 60 * 60 * 1000
 }
 
 // The one stat key with no fixed bucket width: stat-rtd holds the latest sample
@@ -1183,6 +1186,214 @@ const CUSTOM_ALERT_CONFIG = {
     },
     rackTypes: ['dcs']
   },
+  'custom.temperature.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      maxTempC: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.temperature.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      maxTempC: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.pressure.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      maxPressureBar: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.pressure.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      maxPressureBar: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.flow.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      minFlowM3h: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.flow.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      minFlowM3h: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.level.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      minLevelPct: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.level.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      minLevelPct: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.speed.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      minSpeedHz: {
+        type: 'number'
+      },
+      maxSpeedHz: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.speed.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      minSpeedHz: {
+        type: 'number'
+      },
+      maxSpeedHz: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.fancoil_temperature.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      minTempC: {
+        type: 'number'
+      },
+      maxTempC: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.fancoil_temperature.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      minTempC: {
+        type: 'number'
+      },
+      maxTempC: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.vibration.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      onError: {
+        type: 'boolean'
+      }
+    },
+    rackTypes: ['dcs']
+  },
+  'custom.vibration.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      onError: {
+        type: 'boolean'
+      }
+    },
+    rackTypes: ['dcs']
+  },
   'custom.high_site_efficiency.warning': {
     configSchema: {
       enabled: {
@@ -1210,6 +1421,190 @@ const CUSTOM_ALERT_CONFIG = {
       }
     },
     rackTypes: []
+  },
+  'custom.chip_temp.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      lowTemp: {
+        type: 'number'
+      },
+      normalTemp: {
+        type: 'number'
+      },
+      highTemp: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.chip_temp.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      lowTemp: {
+        type: 'number'
+      },
+      normalTemp: {
+        type: 'number'
+      },
+      highTemp: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.low_power.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      lowPower: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.low_power.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      lowPower: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.high_efficiency.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      highEfficiency: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.high_efficiency.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      },
+      highEfficiency: {
+        type: 'number'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.wrong_miner_pool.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.wrong_miner_pool.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.wrong_miner_subaccount.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.wrong_miner_subaccount.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.wrong_worker_name.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.wrong_worker_name.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.ip_worker_name.warning': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      }
+    },
+    rackTypes: ['miner']
+  },
+  'custom.ip_worker_name.critical': {
+    configSchema: {
+      enabled: {
+        type: 'boolean'
+      },
+      notes: {
+        type: 'string'
+      }
+    },
+    rackTypes: ['miner']
   }
 }
 

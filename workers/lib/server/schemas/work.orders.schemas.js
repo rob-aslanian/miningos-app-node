@@ -134,6 +134,7 @@ const list = {
       assignee: { type: "string", minLength: 1, maxLength: 200 },
       creator: { type: "string", minLength: 1, maxLength: 200 },
       partId: { type: "string", minLength: 1, maxLength: 200 },
+      serialNum: { type: "string", minLength: 1, maxLength: 200 },
       status: {
         type: "string",
         enum: ["open", "in_progress", "closed", "cancelled"],
