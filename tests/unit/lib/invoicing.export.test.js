@@ -20,7 +20,7 @@ function mockCtx ({ buckets = 3, interval = HOUR_MS, globalData = {}, hashrateMh
         if (method === 'getWrkExtData') {
           return Array.from({ length: buckets }, (_, i) => ({
             ts: START + i * interval + 1000,
-            stats: [{ poolType: 'f2pool', username: 'account-a', hashrate: poolHashrateHs }]
+            stats: poolHashrateHs === null ? [] : [{ poolType: 'f2pool', username: 'account-a', hashrate: poolHashrateHs }]
           }))
         }
         return Array.from({ length: buckets }, (_, i) => ({
@@ -69,7 +69,7 @@ test('invoicing exports round every figure to three decimals', async (t) => {
     { buckets: 1, hashrateMhs: 123456789012.3 }
   )
 
-  t.is(out.split('\n')[1], '"01/08/2026","00:00","444.444","98.765","123.457","99"', 'matches the precision the UI exports')
+  t.is(out.split('\n')[1], '"01/08/2026","00:00","356.4","98.765","123.457","99"', 'matches the precision the UI exports')
   t.pass()
 })
 
@@ -83,23 +83,53 @@ test('invoicing-hourly-hashes - one row per hour, EH delivered over the hour', a
 
   t.ok(filename.startsWith('invoicing_hourly_hashes_'), 'filename names the export')
   t.is(lines[0], 'date,hour,hashesDeliveredEh,pctOfNominal,avgMinerHashratePhs,avgPoolHashratePhs')
-  t.is(lines[1], '"01/08/2026","00:00","360","80","100","99"', '1e11 MH/s x 3600 / 1e12 = 360 EH')
-  t.is(lines[3], '"01/08/2026","02:00","360","80","100","99"')
+  t.is(lines[1], '"01/08/2026","00:00","356.4","80","100","99"', 'pool 9.9e10 MH/s x 3600 / 1e12 = 356.4 EH')
+  t.is(lines[3], '"01/08/2026","02:00","356.4","80","100","99"')
   t.is(lines.length, 4, 'header plus one row per bucket')
   t.pass()
 })
 
-test('invoicing-daily-hashes - one row per day, EH delivered over the day', async (t) => {
+test('invoicing-daily-hashes - one row per UTC day when the export is asked for UTC', async (t) => {
   const { out } = await runExport(
     'invoicing-daily-hashes',
     { start: START, end: START + 2 * DAY_MS, timezone: 'UTC', format: 'csv' },
-    { buckets: 2, interval: DAY_MS }
+    { buckets: 48, interval: HOUR_MS }
   )
   const lines = out.split('\n')
 
   t.is(lines[0], 'month,day,hashesDeliveredEh,pctOfNominal,avgMinerHashratePhs,avgPoolHashratePhs')
-  t.is(lines[1], '"August","01","8640","80","100","99"', '1e11 MH/s x 86400 / 1e12 = 8640 EH')
-  t.is(lines[2], '"August","02","8640","80","100","99"')
+  t.is(lines[1], '"August","01","8553.6","80","100","99"', 'pool 9.9e10 MH/s x 86400 / 1e12 = 8553.6 EH')
+  t.is(lines[2], '"August","02","8553.6","80","100","99"')
+  t.is(lines.length, 3, 'header plus one row per day')
+  t.pass()
+})
+
+test('invoicing-daily-hashes - hourly buckets roll up into the requested timezone days', async (t) => {
+  const { out } = await runExport(
+    'invoicing-daily-hashes',
+    { start: START, end: START + 2 * DAY_MS, timezone: 'America/Sao_Paulo', format: 'csv' },
+    { buckets: 48, interval: HOUR_MS }
+  )
+  const lines = out.split('\n')
+
+  t.is(lines[1], '"July","31","1069.2","80","100","99"', 'the 3 hours before Aug 1 00:00 UTC are still July 31 locally')
+  t.is(lines[2], '"August","01","8553.6","80","100","99"', 'a full local day')
+  t.is(lines[3], '"August","02","7484.4","80","100","99"', 'the 21 hours the range reaches into Aug 2 locally')
+  t.is(lines.length, 4, 'a UTC-aligned 2-day range spans 3 local days')
+  t.pass()
+})
+
+test('invoicing-daily-hashes - a day the pool never reported delivers null, not zero', async (t) => {
+  const { out } = await runExport(
+    'invoicing-daily-hashes',
+    { start: START, end: START + DAY_MS, timezone: 'UTC', format: 'json' },
+    { buckets: 24, interval: HOUR_MS, poolHashrateHs: null }
+  )
+  const row = JSON.parse(out).hashes[0]
+
+  t.is(row.hashesDeliveredEh, null, 'no pool samples is missing data, not lost hashes')
+  t.is(row.avgPoolHashratePhs, null)
+  t.is(row.avgMinerHashratePhs, 100, 'miner telemetry still reports')
   t.pass()
 })
 

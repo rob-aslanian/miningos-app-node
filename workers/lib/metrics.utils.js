@@ -257,6 +257,33 @@ function buildGroupPowerFromDCS (powerMeters, hashrateByGroup, energyLayout, min
   return groupPower
 }
 
+function rollupLocalDays (log, timezone) {
+  const dayOf = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' })
+  const days = new Map()
+
+  for (const entry of log) {
+    const key = dayOf.format(new Date(entry.ts))
+    if (!days.has(key)) days.set(key, [])
+    days.get(key).push(entry)
+  }
+
+  const sum = (values) => values.reduce((total, value) => total + value, 0)
+
+  return [...days.values()].map((entries) => {
+    const minerMhs = sum(entries.map((e) => e.hashrateMhs))
+    const nominalMhs = sum(entries.map((e) => e.nominalHashrateMhs))
+    const pool = entries.map((e) => e.poolHashrateMhs).filter(Number.isFinite)
+
+    return {
+      ts: entries[0].ts,
+      hashrateMhs: minerMhs / entries.length,
+      poolHashrateMhs: pool.length ? sum(pool) / pool.length : null,
+      pctOfNominal: nominalMhs ? (minerMhs / nominalMhs) * 100 : null,
+      poolSeconds: pool.length * 3600
+    }
+  })
+}
+
 module.exports = {
   parseEntryTs,
   parseEntryTimeRange,
@@ -268,6 +295,7 @@ module.exports = {
   extractKeyEntry,
   resolveInterval,
   getIntervalConfig,
+  rollupLocalDays,
   mhsToPhs,
   mhsToThs,
   parseRackId,

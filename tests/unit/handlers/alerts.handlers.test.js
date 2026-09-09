@@ -8,6 +8,8 @@ const {
   getAlertParams,
   setAlertParams,
   restrictToNotesOnly,
+  getThresholdFields,
+  assertEnabledParamsAreSet,
   extractAlertsFromThings,
   matchesSearch,
   applySort,
@@ -226,6 +228,106 @@ test('setAlertParams - fans out a miner-only alert with no extra threshold field
   }, 'should group the new miner-only alert under miner and nowhere else')
 })
 
+test('setAlertParams - respects the submitted enabled flag', async (t) => {
+  const captured = []
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (pk, method, params) => {
+        captured.push(params)
+        return { ok: true }
+      }
+    },
+    authLib: { tokenHasPerms: async () => true },
+    globalDataLib: {
+      setGlobalData: async (data, type) => ({ data, type })
+    }
+  })
+
+  const mockReq = {
+    _info: { authToken: 'token' },
+    body: {
+      data: {
+        // UI says disabled, threshold is fully configured -> stays disabled
+        'custom.low_hashrate.warning': { enabled: false, minHashRateMhs: 50 },
+        // UI says disabled, no configurable threshold at all -> stays disabled
+        'custom.wrong_miner_pool.warning': { enabled: false, notes: 'pool mismatch' }
+      }
+    }
+  }
+
+  const result = await setAlertParams(mockCtx, mockReq)
+
+  t.alike(result.data, {
+    'custom.low_hashrate.warning': { enabled: false, minHashRateMhs: 50 },
+    'custom.wrong_miner_pool.warning': { enabled: false, notes: 'pool mismatch' }
+  }, 'submitted enabled value is kept as-is')
+
+  await new Promise((resolve) => setImmediate(resolve))
+
+  t.alike(captured[0], {
+    byRackType: {
+      miner: {
+        'custom.low_hashrate.warning': { enabled: false, minHashRateMhs: 50 },
+        'custom.wrong_miner_pool.warning': { enabled: false, notes: 'pool mismatch' }
+      }
+    }
+  }, 'orks are notified with the submitted enabled values')
+})
+
+test('setAlertParams - throws when enabling an alert whose threshold is missing', async (t) => {
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: { jRequest: async () => ({ ok: true }) },
+    authLib: { tokenHasPerms: async () => true },
+    globalDataLib: {
+      setGlobalData: async (data, type) => ({ data, type })
+    }
+  })
+
+  const mockReq = {
+    _info: { authToken: 'token' },
+    body: {
+      data: {
+        'custom.low_hashrate.critical': { enabled: true }
+      }
+    }
+  }
+
+  await t.exception(
+    () => setAlertParams(mockCtx, mockReq),
+    /ERR_ALERT_PARAMS_REQUIRED/,
+    'rejects enabling an alert with no threshold configured'
+  )
+})
+
+test('setAlertParams - throws when enabling a multi-threshold alert with only one threshold set', async (t) => {
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: { jRequest: async () => ({ ok: true }) },
+    authLib: { tokenHasPerms: async () => true },
+    globalDataLib: {
+      setGlobalData: async (data, type) => ({ data, type })
+    }
+  })
+
+  // custom.speed.critical has two threshold fields: minSpeedHz and maxSpeedHz
+  const mockReq = {
+    _info: { authToken: 'token' },
+    body: {
+      data: {
+        'custom.speed.critical': { enabled: true, minSpeedHz: 10 } // maxSpeedHz missing
+      }
+    }
+  }
+
+  await t.exception(
+    () => setAlertParams(mockCtx, mockReq),
+    /ERR_ALERT_PARAMS_REQUIRED/,
+    'rejects enabling when only one of two thresholds is configured'
+  )
+})
+
 test('setAlertParams - restricts users without alert_config_sensitive:w to updating notes only', async (t) => {
   const captured = []
   let capturedPerms
@@ -277,6 +379,53 @@ test('setAlertParams - restricts users without alert_config_sensitive:w to updat
       miner: { 'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: 50, notes: 'new notes' } }
     }
   }, 'should notify orks with the notes-only merged config')
+})
+
+// ==================== getThresholdFields / assertEnabledParamsAreSet Tests ====================
+
+test('getThresholdFields - alert with no configurable threshold has none', (t) => {
+  t.alike(getThresholdFields('custom.wrong_miner_pool.warning'), [], 'only enabled/notes in configSchema -> no threshold fields')
+})
+
+test('getThresholdFields - excludes enabled/notes, keeps the real threshold fields', (t) => {
+  t.alike(getThresholdFields('custom.low_hashrate.warning'), ['minHashRateMhs'])
+  t.alike(getThresholdFields('custom.speed.critical'), ['minSpeedHz', 'maxSpeedHz'])
+})
+
+test('getThresholdFields - unknown alert key has no known thresholds', (t) => {
+  t.alike(getThresholdFields('custom.unknown_alert'), [])
+})
+
+test('assertEnabledParamsAreSet - alert without thresholds can always be enabled', async (t) => {
+  await t.execution(() => assertEnabledParamsAreSet({ 'custom.wrong_miner_pool.warning': { enabled: true } }))
+})
+
+test('assertEnabledParamsAreSet - disabled alerts are never checked, even with missing thresholds', async (t) => {
+  await t.execution(() => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: false } }))
+})
+
+test('assertEnabledParamsAreSet - single-threshold alert requires its threshold to enable', async (t) => {
+  await t.execution(() => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: 50 } }))
+  await t.execution(() => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: 0 } }), 'threshold of 0 still counts as set')
+
+  await t.exception(() => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: true } }), /ERR_ALERT_PARAMS_REQUIRED/)
+  await t.exception(() => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: undefined } }), /ERR_ALERT_PARAMS_REQUIRED/)
+  await t.exception(() => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: null } }), /ERR_ALERT_PARAMS_REQUIRED/)
+})
+
+test('assertEnabledParamsAreSet - multi-threshold alert requires every threshold field to enable', async (t) => {
+  await t.execution(() => assertEnabledParamsAreSet({ 'custom.speed.critical': { enabled: true, minSpeedHz: 10, maxSpeedHz: 60 } }))
+  await t.exception(() => assertEnabledParamsAreSet({ 'custom.speed.critical': { enabled: true, minSpeedHz: 10 } }), /ERR_ALERT_PARAMS_REQUIRED/)
+  await t.exception(() => assertEnabledParamsAreSet({ 'custom.speed.critical': { enabled: true } }), /ERR_ALERT_PARAMS_REQUIRED/)
+})
+
+test('assertEnabledParamsAreSet - notes is never treated as a threshold', async (t) => {
+  await t.exception(() => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: true, notes: 'some notes' } }), /ERR_ALERT_PARAMS_REQUIRED/)
+  await t.execution(() => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: 50, notes: 'some notes' } }))
+})
+
+test('assertEnabledParamsAreSet - unknown alert key has no known thresholds, so it can always be enabled', async (t) => {
+  await t.execution(() => assertEnabledParamsAreSet({ 'custom.unknown_alert': { enabled: true } }))
 })
 
 test('restrictToNotesOnly - drops every submitted field except notes', (t) => {

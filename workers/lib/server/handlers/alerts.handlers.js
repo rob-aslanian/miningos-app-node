@@ -304,6 +304,30 @@ function restrictToNotesOnly (submittedData, existingConfig) {
   return notesOnlyData
 }
 
+const NON_THRESHOLD_FIELDS = ['enabled', 'notes']
+
+// An alert's threshold fields are its configSchema keys other than `enabled`/`notes`.
+function getThresholdFields (alertKey) {
+  const configSchema = CUSTOM_ALERT_CONFIG[alertKey]?.configSchema
+  return Object.keys(configSchema ?? {}).filter(
+    (field) => !NON_THRESHOLD_FIELDS.includes(field)
+  )
+}
+
+// Enabling an alert requires every one of its threshold fields to already be configured.
+function assertEnabledParamsAreSet (data) {
+  for (const alertKey in data) {
+    if (data[alertKey]?.enabled !== true) continue
+
+    const missing = getThresholdFields(alertKey).filter(
+      (field) => data[alertKey]?.[field] === undefined || data[alertKey]?.[field] === null
+    )
+    if (missing.length) {
+      throw new Error('ERR_ALERT_PARAMS_REQUIRED')
+    }
+  }
+}
+
 async function setAlertParams (ctx, req) {
   const type = GLOBAL_DATA_TYPES.ALERT_PARAMETERS
 
@@ -315,6 +339,8 @@ async function setAlertParams (ctx, req) {
     const [existingConfig] = await ctx.globalDataLib.getGlobalData({ type })
     data = restrictToNotesOnly(data, existingConfig)
   }
+
+  assertEnabledParamsAreSet(data)
 
   const byRackType = {}
   for (const alertKey in data) {
@@ -394,6 +420,8 @@ module.exports = {
   getAlertParams,
   setAlertParams,
   restrictToNotesOnly,
+  getThresholdFields,
+  assertEnabledParamsAreSet,
   extractAlertsFromThings,
   matchesSearch,
   applySort,

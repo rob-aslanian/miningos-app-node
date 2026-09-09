@@ -7,8 +7,9 @@ const {
   resolveCostParametersForMonth
 } = require('../../../handlers/finance.handlers')
 const { formatDateTime } = require('../mappers')
+const { rollupLocalDays } = require('../../../../metrics.utils')
 
-const SECONDS = { hour: 3600, day: 86400 }
+const SECONDS = { hour: 3600 }
 const EXPORT_PRECISION = 3
 
 const BREAKDOWN_COLUMNS = [
@@ -68,7 +69,7 @@ function derive (inputs, fn) {
   return inputs.some((value) => value === null) ? null : fn(...inputs)
 }
 
-function buildHashesEntry ({ type, interval, seconds, filenamePrefix, periodColumns, mapPeriod }) {
+function buildHashesEntry ({ type, interval, seconds, rollup, filenamePrefix, periodColumns, mapPeriod }) {
   return {
     type,
     perms: ['reporting:r'],
@@ -82,16 +83,18 @@ function buildHashesEntry ({ type, interval, seconds, filenamePrefix, periodColu
       const { log } = await getHashrate(ctx, {
         query: { start: params.start, end: params.end, interval, nominal: true, pool: true }
       })
+      const buckets = rollup ? rollupLocalDays(log, timezone) : log
 
       async function * rows () {
-        for (const entry of log) {
+        for (const entry of buckets) {
           const hashrateMhs = num(entry.hashrateMhs)
+          const poolHashrateMhs = num(entry.poolHashrateMhs)
           yield roundRow({
             ...mapPeriod(entry.ts, timezone),
-            hashesDeliveredEh: derive([hashrateMhs], (mhs) => (mhs * seconds) / 1e12),
+            hashesDeliveredEh: derive([poolHashrateMhs], (mhs) => (mhs * (entry.poolSeconds ?? seconds)) / 1e12),
             pctOfNominal: num(entry.pctOfNominal),
             avgMinerHashratePhs: derive([hashrateMhs], (mhs) => mhs / 1e9),
-            avgPoolHashratePhs: derive([num(entry.poolHashrateMhs)], (mhs) => mhs / 1e9)
+            avgPoolHashratePhs: derive([poolHashrateMhs], (mhs) => mhs / 1e9)
           })
         }
       }
@@ -118,8 +121,8 @@ const invoicingHourlyHashes = buildHashesEntry({
 
 const invoicingDailyHashes = buildHashesEntry({
   type: 'invoicing-daily-hashes',
-  interval: '1d',
-  seconds: SECONDS.day,
+  interval: '1h',
+  rollup: true,
   filenamePrefix: 'invoicing_daily_hashes_',
   periodColumns: ['month', 'day'],
   mapPeriod (ts, timezone) {
