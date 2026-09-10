@@ -18,6 +18,10 @@ function validateStartEnd (req) {
   return { start, end }
 }
 
+function historyLimit (start, end) {
+  return Math.ceil((end - start) / 86400000) + 1
+}
+
 // Worker timestamps arrive in whatever shape the upstream pool API uses: unix seconds
 // (f2pool `created_at`), unix ms, or an ISO-8601 string (ocean `ts`, e.g. "2026-05-28T16:46:30").
 // Anything this returns unparsed becomes NaN in getStartOfDay and the record is dropped without
@@ -147,5 +151,6 @@ module.exports = {
   normalizeTimestampMs,
   processTransactions,
   extractCurrentPrice,
-  processBlockData
+  processBlockData,
+  historyLimit
 }

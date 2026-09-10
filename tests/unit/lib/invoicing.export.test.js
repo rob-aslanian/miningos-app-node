@@ -3,6 +3,7 @@
 const test = require('brittle')
 const { getExportType, resolveExport, EXPORT_TYPES } = require('../../../workers/lib/server/lib/export/registry')
 const { withDataProxy } = require('../helpers/mockHelpers')
+const { rollupLocalDays } = require('../../../workers/lib/metrics.utils')
 
 const HOUR_MS = 3600000
 const DAY_MS = 24 * HOUR_MS
@@ -69,7 +70,7 @@ test('invoicing exports round every figure to three decimals', async (t) => {
     { buckets: 1, hashrateMhs: 123456789012.3 }
   )
 
-  t.is(out.split('\n')[1], '"01/08/2026","00:00","356.4","98.765","123.457","99"', 'matches the precision the UI exports')
+  t.is(out.split('\n')[1], '"01/08/2026","00:00","356.4","79.2","123.457","99"', 'matches the precision the UI exports')
   t.pass()
 })
 
@@ -83,8 +84,8 @@ test('invoicing-hourly-hashes - one row per hour, EH delivered over the hour', a
 
   t.ok(filename.startsWith('invoicing_hourly_hashes_'), 'filename names the export')
   t.is(lines[0], 'date,hour,hashesDeliveredEh,pctOfNominal,avgMinerHashratePhs,avgPoolHashratePhs')
-  t.is(lines[1], '"01/08/2026","00:00","356.4","80","100","99"', 'pool 9.9e10 MH/s x 3600 / 1e12 = 356.4 EH')
-  t.is(lines[3], '"01/08/2026","02:00","356.4","80","100","99"')
+  t.is(lines[1], '"01/08/2026","00:00","356.4","79.2","100","99"', 'pool 9.9e10 MH/s x 3600 / 1e12 = 356.4 EH')
+  t.is(lines[3], '"01/08/2026","02:00","356.4","79.2","100","99"')
   t.is(lines.length, 4, 'header plus one row per bucket')
   t.pass()
 })
@@ -98,8 +99,8 @@ test('invoicing-daily-hashes - one row per UTC day when the export is asked for 
   const lines = out.split('\n')
 
   t.is(lines[0], 'month,day,hashesDeliveredEh,pctOfNominal,avgMinerHashratePhs,avgPoolHashratePhs')
-  t.is(lines[1], '"August","01","8553.6","80","100","99"', 'pool 9.9e10 MH/s x 86400 / 1e12 = 8553.6 EH')
-  t.is(lines[2], '"August","02","8553.6","80","100","99"')
+  t.is(lines[1], '"August","01","8553.6","79.2","100","99"', 'pool 9.9e10 MH/s x 86400 / 1e12 = 8553.6 EH')
+  t.is(lines[2], '"August","02","8553.6","79.2","100","99"')
   t.is(lines.length, 3, 'header plus one row per day')
   t.pass()
 })
@@ -112,9 +113,9 @@ test('invoicing-daily-hashes - hourly buckets roll up into the requested timezon
   )
   const lines = out.split('\n')
 
-  t.is(lines[1], '"July","31","1069.2","80","100","99"', 'the 3 hours before Aug 1 00:00 UTC are still July 31 locally')
-  t.is(lines[2], '"August","01","8553.6","80","100","99"', 'a full local day')
-  t.is(lines[3], '"August","02","7484.4","80","100","99"', 'the 21 hours the range reaches into Aug 2 locally')
+  t.is(lines[1], '"July","31","1069.2","79.2","100","99"', 'the 3 hours before Aug 1 00:00 UTC are still July 31 locally')
+  t.is(lines[2], '"August","01","8553.6","79.2","100","99"', 'a full local day')
+  t.is(lines[3], '"August","02","7484.4","79.2","100","99"', 'the 21 hours the range reaches into Aug 2 locally')
   t.is(lines.length, 4, 'a UTC-aligned 2-day range spans 3 local days')
   t.pass()
 })
@@ -130,6 +131,7 @@ test('invoicing-daily-hashes - a day the pool never reported delivers null, not 
   t.is(row.hashesDeliveredEh, null, 'no pool samples is missing data, not lost hashes')
   t.is(row.avgPoolHashratePhs, null)
   t.is(row.avgMinerHashratePhs, 100, 'miner telemetry still reports')
+  t.is(row.pctOfNominal, null, 'no pool samples means no delivered share either')
   t.pass()
 })
 
@@ -158,11 +160,11 @@ test('invoice-breakdown - one row, margin applied over energy, ops and payable a
   t.is(row.energyConsumedMwh, 480, '10 MW over two daily buckets')
   t.is(row.energyCostsUsd, 24000, '480 MWh x 50 USD/MWh')
   t.is(row.operationalCostUsd, 5000, 'read from the month production costs')
-  t.is(row.pctOfNominal, 80, 'range-wide delivered percentage')
+  t.is(row.pctOfNominal, 79.2, 'pool vs nominal over the month, not the miner summary')
   t.is(row.amortizationUsd, 150000)
-  t.is(row.amortizationPayableUsd, 120000, '80% of the amortization is payable')
-  t.is(row.marginUsd, 14900, '10% of energy + ops + payable amortization')
-  t.is(row.monthlyInvoiceUsd, 163900)
+  t.is(row.amortizationPayableUsd, 118800, '79.2% of the amortization is payable')
+  t.is(row.marginUsd, 14780, '10% of energy + ops + payable amortization')
+  t.is(row.monthlyInvoiceUsd, 162580)
   t.pass()
 })
 
@@ -200,5 +202,23 @@ test('invoice-breakdown - a missing input nulls its dependents, never zeroes the
   t.is(row.amortizationPayableUsd, null)
   t.is(row.marginUsd, null)
   t.is(row.monthlyInvoiceUsd, null)
+  t.pass()
+})
+
+test('rollupLocalDays - a non-finite miner value is left out of the day mean, not counted as zero', async (t) => {
+  const [day] = rollupLocalDays([
+    { ts: START, hashrateMhs: 100, nominalHashrateMhs: 200, poolHashrateMhs: 100 },
+    { ts: START + HOUR_MS, hashrateMhs: null, nominalHashrateMhs: 200, poolHashrateMhs: null },
+    { ts: START + 2 * HOUR_MS, hashrateMhs: 300, nominalHashrateMhs: 200, poolHashrateMhs: 200 }
+  ], 'UTC')
+
+  t.is(day.hashrateMhs, 200, 'mean of the two finite miner samples')
+  t.is(day.poolHashrateMhs, 150)
+  t.is(day.pctOfNominal, 75, 'summed pool over summed nominal of the hours carrying both')
+  t.is(day.poolSeconds, 7200)
+
+  const [empty] = rollupLocalDays([{ ts: START, hashrateMhs: null, nominalHashrateMhs: 0, poolHashrateMhs: null }], 'UTC')
+  t.is(empty.hashrateMhs, null, 'no finite miner sample is null, not NaN')
+  t.is(empty.pctOfNominal, null)
   t.pass()
 })

@@ -95,7 +95,7 @@ async function getSiteLiveStatus (ctx, req) {
   }
 
   const globalConfigPayload = {
-    fields: { nominalHashrate: 1, nominalPowerAvailability_MW: 1 }
+    fields: { nominalHashrate: 1, nominalPowerAvailability_MW: 1, nominalAvailablePowerMWh: 1 }
   }
 
   const dcsEnabled = isCentralDCSEnabled(ctx)

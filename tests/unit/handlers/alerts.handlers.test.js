@@ -10,6 +10,7 @@ const {
   restrictToNotesOnly,
   getThresholdFields,
   assertEnabledParamsAreSet,
+  dropUnknownAlertKeys,
   extractAlertsFromThings,
   matchesSearch,
   applySort,
@@ -126,6 +127,38 @@ test('setAlertParams - skips unknown alert keys when grouping by rack type', asy
   await new Promise((resolve) => setImmediate(resolve))
 
   t.alike(captured[0].params, { byRackType: {} }, 'unknown alert key contributes nothing to byRackType')
+})
+
+test('setAlertParams - does not persist unknown alert keys to globalDataLib', async (t) => {
+  let capturedData
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: { jRequest: async () => ({ ok: true }) },
+    authLib: { tokenHasPerms: async () => true },
+    globalDataLib: {
+      setGlobalData: async (data, type) => {
+        capturedData = data
+        return { data, type }
+      }
+    }
+  })
+
+  const mockReq = {
+    _info: { authToken: 'token' },
+    body: {
+      data: {
+        'custom.totally_made_up.warning': { enabled: true, notes: 'sneaky' },
+        'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: 50 }
+      }
+    }
+  }
+
+  const result = await setAlertParams(mockCtx, mockReq)
+
+  t.alike(capturedData, {
+    'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: 50 }
+  }, 'unknown alert key is dropped before reaching globalDataLib.setGlobalData')
+  t.alike(result.data, capturedData, 'returned result reflects the filtered data')
 })
 
 test('setAlertParams - fans a single alert key out to all of its rack types', async (t) => {
@@ -428,6 +461,34 @@ test('assertEnabledParamsAreSet - unknown alert key has no known thresholds, so 
   await t.execution(() => assertEnabledParamsAreSet({ 'custom.unknown_alert': { enabled: true } }))
 })
 
+test('assertEnabledParamsAreSet - truthy non-boolean enabled is still gated (matches worker\'s truthy check)', async (t) => {
+  await t.exception(
+    () => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: 1 } }),
+    /ERR_ALERT_PARAMS_REQUIRED/,
+    'enabled: 1 must not bypass the threshold requirement'
+  )
+  await t.execution(
+    () => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: 1, minHashRateMhs: 50 } }),
+    'enabled: 1 is fine once the threshold is actually set'
+  )
+})
+
+test('dropUnknownAlertKeys - keeps only keys present in CUSTOM_ALERT_CONFIG', (t) => {
+  const result = dropUnknownAlertKeys({
+    'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: 50 },
+    'custom.totally_made_up.warning': { enabled: true },
+    not_even_an_alert_key: 'x'
+  })
+
+  t.alike(result, {
+    'custom.low_hashrate.warning': { enabled: true, minHashRateMhs: 50 }
+  }, 'unknown keys are dropped, known keys pass through unchanged')
+})
+
+test('dropUnknownAlertKeys - empty input stays empty', (t) => {
+  t.alike(dropUnknownAlertKeys({}), {})
+})
+
 test('restrictToNotesOnly - drops every submitted field except notes', (t) => {
   const submittedData = {
     'custom.low_hashrate.warning': { enabled: false, minHashRateMhs: 999, notes: 'new notes' },
@@ -653,6 +714,19 @@ test('buildSeveritySummary - empty alerts', (t) => {
   t.is(result.critical, 0, 'critical should be 0')
 })
 
+test('buildSeveritySummary - counts warning severity', (t) => {
+  const alerts = [
+    { severity: 'critical' },
+    { severity: 'warning' },
+    { severity: 'warning' }
+  ]
+
+  const result = buildSeveritySummary(alerts)
+  t.is(result.warning, 2, 'should count warning')
+  t.is(result.critical, 1, 'should count critical')
+  t.is(result.total, 3, 'should count total')
+})
+
 // ==================== deduplicateAlerts Tests ====================
 
 test('deduplicateAlerts - removes duplicates by uuid', (t) => {
@@ -725,7 +799,7 @@ test('getSiteAlerts - happy path', async (t) => {
   t.is(result.summary.miner.high, 1, 'should count 1 high under miner')
   t.is(result.summary.miner.low, 1, 'should count 1 low under miner')
   t.is(result.summary.miner.total, 3, 'miner total covers all alerts')
-  t.alike(result.summary.operational, { critical: 0, high: 0, medium: 0, low: 0, total: 0 }, 'operational bucket present and empty')
+  t.alike(result.summary.operational, { critical: 0, high: 0, medium: 0, low: 0, warning: 0, total: 0 }, 'operational bucket present and empty')
 })
 
 test('getSiteAlerts - empty results', async (t) => {
@@ -740,8 +814,8 @@ test('getSiteAlerts - empty results', async (t) => {
   t.is(result.total, 0, 'should have 0 total')
   t.is(result.alerts.length, 0, 'should have empty alerts')
   t.alike(result.summary, {
-    operational: { critical: 0, high: 0, medium: 0, low: 0, total: 0 },
-    miner: { critical: 0, high: 0, medium: 0, low: 0, total: 0 }
+    operational: { critical: 0, high: 0, medium: 0, low: 0, warning: 0, total: 0 },
+    miner: { critical: 0, high: 0, medium: 0, low: 0, warning: 0, total: 0 }
   }, 'both summary buckets present and zeroed')
 })
 
@@ -1442,8 +1516,8 @@ test('buildSiteAlertsSummary - splits miner family from operational', (t) => {
   ]
 
   const result = buildSiteAlertsSummary(alerts)
-  t.alike(result.miner, { critical: 1, high: 1, medium: 0, low: 0, total: 2 }, 'miner + subtype counted under miner')
-  t.alike(result.operational, { critical: 1, high: 0, medium: 1, low: 1, total: 3 }, 'non-miner types counted under operational')
+  t.alike(result.miner, { critical: 1, high: 1, medium: 0, low: 0, warning: 0, total: 2 }, 'miner + subtype counted under miner')
+  t.alike(result.operational, { critical: 1, high: 0, medium: 1, low: 1, warning: 0, total: 3 }, 'non-miner types counted under operational')
 })
 
 test('buildSiteAlertsSummary - alert without type falls under operational', (t) => {
@@ -1452,12 +1526,23 @@ test('buildSiteAlertsSummary - alert without type falls under operational', (t) 
   t.is(result.miner.total, 0, 'miner bucket untouched')
 })
 
+test('buildSiteAlertsSummary - counts warning severity per bucket', (t) => {
+  const alerts = [
+    { type: 'site', severity: 'warning' },
+    { type: 'miner', severity: 'warning' }
+  ]
+
+  const result = buildSiteAlertsSummary(alerts)
+  t.is(result.operational.warning, 1, 'warning counted under operational')
+  t.is(result.miner.warning, 1, 'warning counted under miner')
+})
+
 // ==================== summary over the full set (ignores filter/search/type) ====================
 
 test('getSiteAlerts - summary ignores filter, search and type params', async (t) => {
   const fullSummary = {
-    operational: { critical: 1, high: 0, medium: 1, low: 0, total: 2 },
-    miner: { critical: 0, high: 1, medium: 0, low: 1, total: 2 }
+    operational: { critical: 1, high: 0, medium: 1, low: 0, warning: 0, total: 2 },
+    miner: { critical: 0, high: 1, medium: 0, low: 1, warning: 0, total: 2 }
   }
   const queries = [
     {},
@@ -1536,6 +1621,8 @@ test('getSiteAlerts - creates critical and warning alerts when site efficiency e
   t.is(bySeverity.critical.type, 'site', 'site-level alert has no device type')
   t.is(bySeverity.critical.description, 'High Site Efficiency detected', 'description is the short, fixed copy')
   t.is(bySeverity.critical.message, 'Site efficiency 100000.00 W/TH/s (max 50000 W/TH/s)', 'message reports efficiency to 2 decimal places')
+  t.is(result.summary.operational.warning, 1, 'warning tier is counted in the summary')
+  t.is(result.summary.operational.critical, 1, 'critical tier is counted in the summary')
 })
 
 test('getSiteAlerts - formats a fractional efficiency to 2 decimal places in the message', async (t) => {

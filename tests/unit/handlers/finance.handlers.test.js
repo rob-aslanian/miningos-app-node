@@ -1734,3 +1734,72 @@ test('getProductionCosts - keeps every month overlapping the range', async (t) =
   t.alike(await months(Date.UTC(2026, 7, 15), Date.UTC(2026, 7, 20)), [8], 'a range inside a month keeps that month')
   t.pass()
 })
+
+test('getEbitda - passes a limit that covers every day in the range to mempool history', async (t) => {
+  const start = 1700000000000
+  const end = start + 400 * 86400000
+  const queries = []
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        if (method === 'getWrkExtData' && payload.query) queries.push(payload.query)
+        return []
+      }
+    },
+    globalDataLib: { getGlobalData: async () => [] }
+  })
+
+  await getEbitda(mockCtx, { query: { start, end, period: 'monthly' } }, {})
+
+  const prices = queries.find(q => q.key === 'HISTORICAL_PRICES')
+  t.ok(prices.limit > 400, 'limit exceeds the number of daily rows in the range')
+})
+
+test('getRevenueSummary - reads the documented nominal power key and emits nominal, available and downtime energy', async (t) => {
+  const dayTs = 1700006400000
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        if (method === 'tailLog') return [{ ts: dayTs, site_power_w: 5000000 }]
+        if (method === 'getGlobalConfig') return { nominalAvailablePowerMWh: 10 }
+        if (method === 'getWrkExtData' && payload.query.key === 'stats-history') {
+          return [[{ ts: dayTs, energy_aggr: { ute_energy_aggr: 200 } }]]
+        }
+        return []
+      }
+    },
+    globalDataLib: { getGlobalData: async () => [] }
+  })
+
+  const { log: [entry] } = await getRevenueSummary(mockCtx, { query: { start: dayTs, end: dayTs + 1, period: 'daily' } }, {})
+
+  t.is(entry.powerUtilization, 0.5)
+  t.is(entry.nominalConsumptionMWh, 240)
+  t.is(entry.availableEnergyMWh, 200)
+  t.is(entry.downtimeMWh, 120)
+})
+
+test('getRevenueSummary - monthly btcProductionCost is total cost over total BTC, not a mean of daily ratios', async (t) => {
+  const day1 = 1700006400000
+  const day2 = day1 + 86400000
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        if (method === 'getWrkExtData' && payload.query.key === 'transactions') {
+          return [{ transactions: [{ ts: day1, changed_balance: 1 }, { ts: day2, changed_balance: 0.001 }] }]
+        }
+        return []
+      }
+    },
+    globalDataLib: {
+      getGlobalData: async ({ type }) => type === 'productionCosts' ? [{ year: 2023, month: 11, energyCost: 3000 }] : []
+    }
+  })
+
+  const { log: [month] } = await getRevenueSummary(mockCtx, { query: { start: day1, end: day2 + 1, period: 'monthly' } }, {})
+
+  t.is(Math.round(month.btcProductionCost), 200)
+})

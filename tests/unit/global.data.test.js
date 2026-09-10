@@ -597,6 +597,8 @@ test('GlobalDataLib - setCostParametersData rejects invalid values', async funct
     [{ infraAmortizationUsd: 'free' }, 'ERR_INVALID_AMORTIZATION'],
     [{ marginPct: 101 }, 'ERR_INVALID_MARGIN'],
     [{ marginPct: -1 }, 'ERR_INVALID_MARGIN'],
+    [{ capexUsd: -5 }, 'ERR_INVALID_AMORTIZATION'],
+    [{ commissionedAt: 1.5 }, 'ERR_INVALID_COMMISSIONED_AT'],
     [{ lcoe: 'cheap' }, 'ERR_INVALID_LCOE'],
     [{ lcoe: { source: 'guess' } }, 'ERR_INVALID_LCOE_SOURCE'],
     [{ lcoe: { source: 'current', customUsdPerMwh: -5 } }, 'ERR_INVALID_LCOE_COST'],

@@ -7,7 +7,7 @@ const {
   resolveCostParametersForMonth
 } = require('../../../handlers/finance.handlers')
 const { formatDateTime } = require('../mappers')
-const { rollupLocalDays } = require('../../../../metrics.utils')
+const { rollupLocalDays, poolPctOfNominal } = require('../../../../metrics.utils')
 
 const SECONDS = { hour: 3600 }
 const EXPORT_PRECISION = 3
@@ -92,7 +92,7 @@ function buildHashesEntry ({ type, interval, seconds, rollup, filenamePrefix, pe
           yield roundRow({
             ...mapPeriod(entry.ts, timezone),
             hashesDeliveredEh: derive([poolHashrateMhs], (mhs) => (mhs * (entry.poolSeconds ?? seconds)) / 1e12),
-            pctOfNominal: num(entry.pctOfNominal),
+            pctOfNominal: rollup ? entry.pctOfNominal : poolPctOfNominal([entry]),
             avgMinerHashratePhs: derive([hashrateMhs], (mhs) => mhs / 1e9),
             avgPoolHashratePhs: derive([poolHashrateMhs], (mhs) => mhs / 1e9)
           })
@@ -142,7 +142,7 @@ const invoiceBreakdown = {
   async fetchExport (ctx, { params, now, timezone }) {
     const { start, end } = params
     const [hashrate, consumption, costParameters, productionCosts] = await Promise.all([
-      getHashrate(ctx, { query: { start, end, interval: '1d', nominal: true } }),
+      getHashrate(ctx, { query: { start, end, interval: '1d', nominal: true, pool: true } }),
       getConsumption(ctx, { query: { start, end, interval: '1d' } }),
       getCostParameters(ctx),
       getProductionCosts(ctx, start, end)
@@ -163,7 +163,7 @@ const invoiceBreakdown = {
     const lcoeUsdPerMwh = num(resolved.lcoe?.effectiveUsdPerMwh)
     const energyCostsUsd = derive([energyConsumedMwh, lcoeUsdPerMwh], (mwh, lcoe) => mwh * lcoe)
     const operationalCostUsd = num(costs?.operationalCost ?? costs?.operationalCostsUSD)
-    const pctOfNominal = num(hashrate.summary.avgPctOfNominal)
+    const pctOfNominal = poolPctOfNominal(hashrate.log)
     const minerAmortizationUsd = num(resolved.minerAmortizationUsd)
     const infraAmortizationUsd = num(resolved.infraAmortizationUsd)
     const amortizationUsd = derive([minerAmortizationUsd, infraAmortizationUsd], (miner, infra) => miner + infra)

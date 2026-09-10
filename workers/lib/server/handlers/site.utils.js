@@ -97,15 +97,17 @@ function aggregatePoolStats (poolDataResults) {
 function extractGlobalConfig (globalConfigResults) {
   const config = {
     nominalHashrate: 0,
-    nominalPowerAvailability_MW: 0
+    nominalPowerAvailability_MW: 0,
+    nominalAvailablePowerMWh: 0
   }
 
   for (const orkResult of globalConfigResults) {
     if (!orkResult || typeof orkResult !== 'object') continue
     if (orkResult.nominalHashrate) { config.nominalHashrate = orkResult.nominalHashrate }
-    if (orkResult.nominalPowerAvailability_MW) {
-      config.nominalPowerAvailability_MW =
-        orkResult.nominalPowerAvailability_MW
+    const nominalMW = orkResult.nominalPowerAvailability_MW || orkResult.nominalAvailablePowerMWh
+    if (nominalMW) { config.nominalPowerAvailability_MW = nominalMW }
+    if (orkResult.nominalAvailablePowerMWh) {
+      config.nominalAvailablePowerMWh = orkResult.nominalAvailablePowerMWh
     }
   }
 

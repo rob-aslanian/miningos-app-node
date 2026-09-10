@@ -18,7 +18,8 @@ const {
   normalizeTimestampMs,
   processTransactions,
   extractCurrentPrice,
-  processBlockData
+  processBlockData,
+  historyLimit
 } = require('./finance.utils')
 
 // Daily site power and hashrate come from the metrics handlers: DCS-aware and averaged per
@@ -42,7 +43,6 @@ async function getEnergyBalance (ctx, req) {
     currentPriceResults,
     productionCosts,
     activeEnergyInResults,
-    uteEnergyResults,
     globalConfigResults,
     costParameters
   ] = await runParallel([
@@ -56,7 +56,7 @@ async function getEnergyBalance (ctx, req) {
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
       type: WORKER_TYPES.MEMPOOL,
-      query: { key: 'HISTORICAL_PRICES', start, end }
+      query: { key: 'HISTORICAL_PRICES', start, end, limit: historyLimit(start, end) }
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
@@ -66,11 +66,6 @@ async function getEnergyBalance (ctx, req) {
 
     (cb) => getProductionCosts(ctx, start, end)
       .then(r => cb(null, r)).catch(cb),
-
-    (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
-      type: WORKER_TYPES.ELECTRICITY,
-      query: { key: 'stats-history', start, end, groupRange: '1D' }
-    }).then(r => cb(null, r)).catch(cb),
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
       type: WORKER_TYPES.ELECTRICITY,
@@ -89,7 +84,7 @@ async function getEnergyBalance (ctx, req) {
   const currentBtcPrice = extractCurrentPrice(currentPriceResults)
   const costsByMonth = processCostsData(productionCosts)
   const dailyActiveEnergyIn = processEnergyData(activeEnergyInResults, AGGR_FIELDS.ACTIVE_ENERGY_IN)
-  const dailyUteEnergy = processEnergyData(uteEnergyResults, AGGR_FIELDS.UTE_ENERGY)
+  const dailyUteEnergy = processEnergyData(activeEnergyInResults, AGGR_FIELDS.UTE_ENERGY)
   const nominalPowerMW = extractNominalPower(globalConfigResults)
 
   const allDays = new Set([
@@ -226,7 +221,8 @@ function extractNominalPower (results) {
     const data = Array.isArray(res) ? res : [res]
     for (const entry of data) {
       if (!entry) continue
-      if (entry.nominalPowerAvailability_MW) return entry.nominalPowerAvailability_MW
+      const mw = entry.nominalPowerAvailability_MW || entry.nominalAvailablePowerMWh
+      if (mw) return mw
     }
   }
   return 0
@@ -329,7 +325,7 @@ async function getEbitda (ctx, req) {
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
       type: WORKER_TYPES.MEMPOOL,
-      query: { key: 'HISTORICAL_PRICES', start, end }
+      query: { key: 'HISTORICAL_PRICES', start, end, limit: historyLimit(start, end) }
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
@@ -395,8 +391,9 @@ async function getEbitda (ctx, req) {
   }
 
   const aggregated = aggregateByPeriod(log, period, [], {
-    meanKeys: ['btcPrice', 'powerW', 'hashrateMhs', 'btcProductionCost']
+    meanKeys: ['btcPrice', 'powerW', 'hashrateMhs']
   })
+  for (const entry of aggregated) entry.btcProductionCost = safeDiv(entry.totalCostsUSD, entry.revenueBTC)
   const summary = calculateEbitdaSummary(aggregated, currentBtcPrice)
 
   return { log: aggregated, summary }
@@ -478,7 +475,7 @@ async function getCostSummary (ctx, req) {
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
       type: WORKER_TYPES.MEMPOOL,
-      query: { key: 'HISTORICAL_PRICES', start, end }
+      query: { key: 'HISTORICAL_PRICES', start, end, limit: historyLimit(start, end) }
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => getDailySeries(ctx, start, end, getConsumption, 'powerW')
@@ -572,7 +569,7 @@ async function getSubsidyFees (ctx, req) {
 
   const blockResults = await ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
     type: WORKER_TYPES.MEMPOOL,
-    query: { key: 'HISTORICAL_BLOCKSIZES', start, end }
+    query: { key: 'HISTORICAL_BLOCKSIZES', start, end, limit: historyLimit(start, end) }
   })
 
   const dailyBlocks = processBlockData(blockResults)
@@ -746,7 +743,6 @@ async function getRevenueSummary (ctx, req) {
     productionCosts,
     blockResults,
     activeEnergyInResults,
-    uteEnergyResults,
     globalConfigResults,
     costParameters
   ] = await runParallel([
@@ -757,7 +753,7 @@ async function getRevenueSummary (ctx, req) {
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
       type: WORKER_TYPES.MEMPOOL,
-      query: { key: 'HISTORICAL_PRICES', start, end }
+      query: { key: 'HISTORICAL_PRICES', start, end, limit: historyLimit(start, end) }
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
@@ -776,12 +772,7 @@ async function getRevenueSummary (ctx, req) {
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
       type: WORKER_TYPES.MEMPOOL,
-      query: { key: 'HISTORICAL_BLOCKSIZES', start, end }
-    }).then(r => cb(null, r)).catch(cb),
-
-    (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
-      type: WORKER_TYPES.ELECTRICITY,
-      query: { key: 'stats-history', start, end, groupRange: '1D' }
+      query: { key: 'HISTORICAL_BLOCKSIZES', start, end, limit: historyLimit(start, end) }
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
@@ -802,7 +793,7 @@ async function getRevenueSummary (ctx, req) {
   const costsByMonth = processCostsData(productionCosts)
   const dailyBlocks = processBlockData(blockResults)
   const dailyActiveEnergyIn = processEnergyData(activeEnergyInResults, AGGR_FIELDS.ACTIVE_ENERGY_IN)
-  const dailyUteEnergy = processEnergyData(uteEnergyResults, AGGR_FIELDS.UTE_ENERGY)
+  const dailyUteEnergy = processEnergyData(activeEnergyInResults, AGGR_FIELDS.UTE_ENERGY)
   const nominalPowerMW = extractNominalPower(globalConfigResults)
 
   const allDays = new Set([
@@ -831,12 +822,14 @@ async function getRevenueSummary (ctx, req) {
 
     const monthKey = getMonthKeyUtc(ts)
     const costs = costsByMonth[monthKey] || {}
-    const energyCostsUSD = resolveEnergyCostsUSD(costs, consumptionMWh, resolveLcoeUsdPerMwh(costParameters, monthKey))
+    const lcoeUsdPerMwh = resolveLcoeUsdPerMwh(costParameters, monthKey)
+    const energyCostsUSD = resolveEnergyCostsUSD(costs, consumptionMWh, lcoeUsdPerMwh)
     const operationalCostsUSD = costs.operationalCostPerDay || 0
     const totalCostsUSD = energyCostsUSD + operationalCostsUSD
 
     const activeEnergyIn = dailyActiveEnergyIn[dayTs] || 0
     const uteEnergy = dailyUteEnergy[dayTs] || 0
+    const nominalConsumptionMWh = nominalPowerMW * 24
 
     const curtailmentMWh = activeEnergyIn > 0
       ? activeEnergyIn - consumptionMWh
@@ -880,17 +873,22 @@ async function getRevenueSummary (ctx, req) {
       curtailmentMWh,
       curtailmentRate,
       operationalIssuesRate,
-      powerUtilization
+      powerUtilization,
+      availableEnergyMWh: uteEnergy,
+      nominalConsumptionMWh,
+      downtimeMWh: nominalPowerMW > 0 ? nominalConsumptionMWh - consumptionMWh : null,
+      lcoeUsdPerMwh
     })
   }
 
   const aggregated = aggregateByPeriod(log, period, [], {
     meanKeys: [
-      'btcPrice', 'powerW', 'hashrateMhs', 'btcProductionCost', 'energyRevenuePerMWh', 'allInCostPerMWh',
+      'btcPrice', 'powerW', 'hashrateMhs', 'energyRevenuePerMWh', 'allInCostPerMWh',
       'hashRevenueBTCPerPHsPerDay', 'hashRevenueUSDPerPHsPerDay',
-      'curtailmentRate', 'operationalIssuesRate', 'powerUtilization'
+      'curtailmentRate', 'operationalIssuesRate', 'powerUtilization', 'lcoeUsdPerMwh'
     ]
   })
+  for (const entry of aggregated) entry.btcProductionCost = safeDiv(entry.totalCostsUSD, entry.revenueBTC)
   const summary = calculateDetailedRevenueSummary(aggregated, currentBtcPrice)
 
   return { log: aggregated, summary }
@@ -903,6 +901,9 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
       totalRevenueUSD: 0,
       totalFeesBTC: 0,
       totalFeesUSD: 0,
+      totalAvailableEnergyMWh: 0,
+      totalNominalConsumptionMWh: 0,
+      totalDowntimeMWh: 0,
       totalCostsUSD: 0,
       totalConsumptionMWh: 0,
       avgCostPerMWh: null,
@@ -922,6 +923,9 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
     acc.feesBTC += entry.feesBTC || 0
     acc.feesUSD += entry.feesUSD || 0
     acc.costsUSD += entry.totalCostsUSD || 0
+    acc.availableEnergyMWh += entry.availableEnergyMWh || 0
+    acc.nominalConsumptionMWh += entry.nominalConsumptionMWh || 0
+    acc.downtimeMWh += entry.downtimeMWh || 0
     acc.consumptionMWh += entry.consumptionMWh || 0
     acc.ebitdaSelling += entry.ebitdaSelling || 0
     acc.ebitdaHodl += entry.ebitdaHodl || 0
@@ -942,6 +946,9 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
     feesBTC: 0,
     feesUSD: 0,
     costsUSD: 0,
+    availableEnergyMWh: 0,
+    nominalConsumptionMWh: 0,
+    downtimeMWh: 0,
     consumptionMWh: 0,
     ebitdaSelling: 0,
     ebitdaHodl: 0,
@@ -958,6 +965,9 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
     totalRevenueUSD: totals.revenueUSD,
     totalFeesBTC: totals.feesBTC,
     totalFeesUSD: totals.feesUSD,
+    totalAvailableEnergyMWh: totals.availableEnergyMWh,
+    totalNominalConsumptionMWh: totals.nominalConsumptionMWh,
+    totalDowntimeMWh: totals.downtimeMWh,
     totalCostsUSD: totals.costsUSD,
     totalConsumptionMWh: totals.consumptionMWh,
     avgCostPerMWh: safeDiv(totals.costsUSD, totals.consumptionMWh),
@@ -994,7 +1004,7 @@ async function getHashRevenue (ctx, req) {
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
       type: WORKER_TYPES.MEMPOOL,
-      query: { key: 'HISTORICAL_PRICES', start, end }
+      query: { key: 'HISTORICAL_PRICES', start, end, limit: historyLimit(start, end) }
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
@@ -1004,7 +1014,7 @@ async function getHashRevenue (ctx, req) {
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
       type: WORKER_TYPES.MEMPOOL,
-      query: { key: 'HISTORICAL_HASHRATE', start, end }
+      query: { key: 'HISTORICAL_HASHRATE', start, end, limit: historyLimit(start, end) }
     }).then(r => cb(null, r)).catch(cb)
   ])
 
@@ -1219,7 +1229,7 @@ async function getPowerCost (ctx, req) {
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
       type: WORKER_TYPES.MEMPOOL,
-      query: { key: 'HISTORICAL_PRICES', start, end }
+      query: { key: 'HISTORICAL_PRICES', start, end, limit: historyLimit(start, end) }
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => getProductionCosts(ctx, start, end)

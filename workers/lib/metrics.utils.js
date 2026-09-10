@@ -257,6 +257,18 @@ function buildGroupPowerFromDCS (powerMeters, hashrateByGroup, energyLayout, min
   return groupPower
 }
 
+const sum = (values) => values.reduce((total, value) => total + value, 0)
+const mean = (values) => values.length ? sum(values) / values.length : null
+const finiteValues = (entries, field) => entries.map((entry) => entry[field]).filter(Number.isFinite)
+
+// Financial reports use pool data only: summed pool vs summed nominal over the
+// buckets carrying both, so a pool polling gap never dilutes the share.
+function poolPctOfNominal (entries) {
+  const pairs = entries.filter((entry) => Number.isFinite(entry.poolHashrateMhs) && entry.nominalHashrateMhs > 0)
+  if (!pairs.length) return null
+  return (sum(pairs.map((entry) => entry.poolHashrateMhs)) / sum(pairs.map((entry) => entry.nominalHashrateMhs))) * 100
+}
+
 function rollupLocalDays (log, timezone) {
   const dayOf = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' })
   const days = new Map()
@@ -267,18 +279,14 @@ function rollupLocalDays (log, timezone) {
     days.get(key).push(entry)
   }
 
-  const sum = (values) => values.reduce((total, value) => total + value, 0)
-
   return [...days.values()].map((entries) => {
-    const minerMhs = sum(entries.map((e) => e.hashrateMhs))
-    const nominalMhs = sum(entries.map((e) => e.nominalHashrateMhs))
-    const pool = entries.map((e) => e.poolHashrateMhs).filter(Number.isFinite)
+    const pool = finiteValues(entries, 'poolHashrateMhs')
 
     return {
       ts: entries[0].ts,
-      hashrateMhs: minerMhs / entries.length,
-      poolHashrateMhs: pool.length ? sum(pool) / pool.length : null,
-      pctOfNominal: nominalMhs ? (minerMhs / nominalMhs) * 100 : null,
+      hashrateMhs: mean(finiteValues(entries, 'hashrateMhs')),
+      poolHashrateMhs: mean(pool),
+      pctOfNominal: poolPctOfNominal(entries),
       poolSeconds: pool.length * 3600
     }
   })
@@ -296,6 +304,7 @@ module.exports = {
   resolveInterval,
   getIntervalConfig,
   rollupLocalDays,
+  poolPctOfNominal,
   mhsToPhs,
   mhsToThs,
   parseRackId,

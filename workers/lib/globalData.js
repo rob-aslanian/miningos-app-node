@@ -7,7 +7,7 @@ const gLibUtilBase = require('@bitfinex/lib-js-util-base')
 const { isValidJsonObject } = require('./utils')
 
 function validateCostParameterFields (data) {
-  const amounts = ['minerAmortizationUsd', 'infraAmortizationUsd']
+  const amounts = ['minerAmortizationUsd', 'infraAmortizationUsd', 'capexUsd']
   for (const field of amounts) {
     const val = data[field]
     if (val !== undefined && val !== null && (!Number.isFinite(val) || val < 0)) {
@@ -19,6 +19,12 @@ function validateCostParameterFields (data) {
   if (marginPct !== undefined && marginPct !== null &&
     (!Number.isFinite(marginPct) || marginPct < 0 || marginPct > 100)) {
     throw new Error('ERR_INVALID_MARGIN')
+  }
+
+  const { commissionedAt } = data
+  if (commissionedAt !== undefined && commissionedAt !== null &&
+    (!Number.isInteger(commissionedAt) || commissionedAt <= 0)) {
+    throw new Error('ERR_INVALID_COMMISSIONED_AT')
   }
 
   const lcoe = data.lcoe

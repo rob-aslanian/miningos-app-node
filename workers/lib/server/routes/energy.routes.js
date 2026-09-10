@@ -32,7 +32,7 @@ module.exports = (ctx) => [
     },
     ...createCachedAuthRoute(
       ctx,
-      (req) => ['energy-forecast-history'],
+      (req) => ['energy-forecast-history', req.query.start, req.query.end],
       ENDPOINTS.ENERGY_FORECAST_HISTORY,
       getEnergyForecastHistory,
       [AUTH_PERMISSIONS.FORECAST_OVERVIEW]
