@@ -141,17 +141,21 @@ const invoiceBreakdown = {
   assertParams: assertRange,
   async fetchExport (ctx, { params, now, timezone }) {
     const { start, end } = params
+    // localMonth: the caller sends the requested timezone's calendar month and the
+    // invoice is summed from hourly buckets, since daily ones are UTC-aligned and
+    // cannot form a local month. Without it the range is the UTC month the UI has
+    // always sent, read in UTC so a west-of-UTC label timezone does not bill the
+    // month before.
+    const localMonth = params.localMonth === true || params.localMonth === 'true'
+    const interval = localMonth ? '1h' : '1d'
     const [hashrate, consumption, costParameters, productionCosts] = await Promise.all([
-      getHashrate(ctx, { query: { start, end, interval: '1d', nominal: true, pool: true } }),
-      getConsumption(ctx, { query: { start, end, interval: '1d' } }),
+      getHashrate(ctx, { query: { start, end, interval, nominal: true, pool: true } }),
+      getConsumption(ctx, { query: { start, end, interval } }),
       getCostParameters(ctx),
       getProductionCosts(ctx, start, end)
     ])
 
-    // The invoice month is read in UTC, not in the requested timezone: the UI asks
-    // for exact UTC month bounds and only sends its own timezone to label rows, so
-    // resolving the month locally would bill a west-of-UTC site against the month before.
-    const { year, month } = dateParts(start, 'UTC')
+    const { year, month } = dateParts(start, localMonth ? timezone : 'UTC')
     const resolved = resolveCostParametersForMonth(costParameters, `${year}-${month}`)
     const costs = productionCosts.find(
       (entry) => Number(entry.year) === Number(year) && Number(entry.month) === Number(month)

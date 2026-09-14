@@ -186,6 +186,28 @@ test('invoice-breakdown - the month is read in UTC, not in the label timezone', 
   t.pass()
 })
 
+test('invoice-breakdown - localMonth bills the requested timezone month from hourly buckets', async (t) => {
+  const globalData = {
+    costParameters: { overrides: { '2026-07': { lcoe: { effectiveUsdPerMwh: 42 } }, '2026-08': { lcoe: { effectiveUsdPerMwh: 50 } } } },
+    productionCosts: [{ site: 'site', year: 2026, month: 8, operationalCost: 5000 }]
+  }
+  // Local August in Sao Paulo starts at 03:00 UTC on the 1st
+  const start = START + 3 * HOUR_MS
+  const { out } = await runExport(
+    'invoice-breakdown',
+    { start, end: start + 2 * DAY_MS, timezone: 'America/Sao_Paulo', format: 'json', localMonth: 'true' },
+    { buckets: 48, interval: HOUR_MS, globalData }
+  )
+  const row = JSON.parse(out).breakdown[0]
+
+  t.is(row.month, 8, 'the local month start belongs to August')
+  t.is(row.lcoeUsdPerMwh, 50, 'August override, not July')
+  t.is(row.operationalCostUsd, 5000)
+  t.is(row.energyConsumedMwh, 480, '10 MW over 48 hourly buckets, each an hour long')
+  t.is(row.pctOfNominal, 79.2, 'pool vs nominal over the hourly buckets')
+  t.pass()
+})
+
 test('invoice-breakdown - a missing input nulls its dependents, never zeroes them', async (t) => {
   const { out } = await runExport(
     'invoice-breakdown',
