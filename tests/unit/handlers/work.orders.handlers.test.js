@@ -2117,21 +2117,6 @@ test("handlers: appendWorkLogEntry calls saveThingComment with the right rack/th
   ctx._workOrderRackId = RACK;
   await handlers.appendWorkLogEntry(ctx, {
     ...userMeta(),
-<<<<<<< HEAD
-    params: { id: "wo-1" },
-    body: { text: "replaced PSU" },
-  });
-  t.is(captured.rackId, RACK);
-  t.is(captured.thingId, "wo-1");
-  t.is(captured.comment, "replaced PSU");
-  t.is(captured.user, "op@test");
-});
-
-function mkRep() {
-  const headers = {};
-  let body;
-  let status = 200;
-=======
     params: { id: 'wo-1' },
     body: { text: 'replaced PSU' }
   })
@@ -2224,7 +2209,6 @@ function mkRep () {
   const headers = {}
   let body
   let status = 200
->>>>>>> 0f26b9ab3626966adc91cf2ecdff04ac3bcd43ed
   return {
     header: (k, v) => {
       headers[k] = v;

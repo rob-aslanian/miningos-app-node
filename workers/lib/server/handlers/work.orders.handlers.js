@@ -763,9 +763,6 @@ async function appendWorkLogEntry(ctx, req) {
   );
 }
 
-<<<<<<< HEAD
-async function _loadWorkOrderByIdOrCode(ctx, idOrCode) {
-=======
 async function appendWorkOrderNote (ctx, req) {
   const rackId = await getWorkOrderRackId(ctx)
 
@@ -809,7 +806,6 @@ async function listWorkOrderNotes (ctx, req) {
 }
 
 async function _loadWorkOrderByIdOrCode (ctx, idOrCode) {
->>>>>>> 0f26b9ab3626966adc91cf2ecdff04ac3bcd43ed
   const params = {
     query: {
       type: WORK_ORDER_THING_TYPE,

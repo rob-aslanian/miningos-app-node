@@ -307,23 +307,4 @@ const exportBulk = {
   querystring: idsQuerystring(8000),
 };
 
-<<<<<<< HEAD
-module.exports = {
-  create,
-  createBatch,
-  list,
-  byId,
-  update,
-  close,
-  cancel,
-  reopen,
-  assign,
-  audit,
-  log,
-  export: exportRoute,
-  exportRma,
-  exportBulk,
-};
-=======
 module.exports = { create, createBatch, list, byId, update, close, cancel, reopen, assign, audit, log, notesAppend, notesList, export: exportRoute, exportRma, exportBulk }
->>>>>>> 0f26b9ab3626966adc91cf2ecdff04ac3bcd43ed
