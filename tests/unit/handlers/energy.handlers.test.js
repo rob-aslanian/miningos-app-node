@@ -24,6 +24,12 @@ const AVAILABLE_ENERGY_DATA = [
   { ts: 1700000000000, availableMw: 12.5 }
 ]
 
+const AVAILABLE_ENERGY_HISTORY_BODY = {
+  start: 1700000000000,
+  end: 1700100000000,
+  available: true
+}
+
 test('setForecastOverrideHistory - writes forecastOverrideHist with the request body', async (t) => {
   let captured = null
   const mockCtx = withDataProxy({
@@ -81,7 +87,7 @@ test('setForecastOverrideHistory - uses a different key than setForecastOverride
   t.pass()
 })
 
-test('setAvailableEnergyHistory - writes availableEnergyHistory with the request data', async (t) => {
+test('setAvailableEnergyHistory - writes availableEnergyHistory with the request body', async (t) => {
   let captured = null
   const mockCtx = withDataProxy({
     conf: { orks: [{ rpcPublicKey: 'key1' }] },
@@ -93,12 +99,12 @@ test('setAvailableEnergyHistory - writes availableEnergyHistory with the request
     }
   })
 
-  const result = await setAvailableEnergyHistory(mockCtx, { body: { data: AVAILABLE_ENERGY_DATA } })
+  const result = await setAvailableEnergyHistory(mockCtx, { body: AVAILABLE_ENERGY_HISTORY_BODY })
 
   t.is(captured.method, RPC_METHODS.SET_WRK_EXT_DATA, 'should call setWrkExtData')
   t.is(captured.payload.type, WORKER_TYPES.ELECTRICITY, 'should target the electricity worker')
   t.is(captured.payload.key, ELECTRICITY_EXT_DATA_KEYS.AVAIL_ENERGY_HISTORY, 'should write the available energy history key')
-  t.alike(captured.payload.value, AVAILABLE_ENERGY_DATA, 'should pass req.body.data as the value')
+  t.alike(captured.payload.value, AVAILABLE_ENERGY_HISTORY_BODY, 'should pass the request body as the value')
   t.ok(Array.isArray(result), 'should return an array of ork results')
   t.alike(result[0], { success: true }, 'should return the ork response')
   t.pass()
@@ -112,7 +118,7 @@ test('setAvailableEnergyHistory - maps the write to every ork', async (t) => {
     }
   })
 
-  const result = await setAvailableEnergyHistory(mockCtx, { body: { data: AVAILABLE_ENERGY_DATA } })
+  const result = await setAvailableEnergyHistory(mockCtx, { body: AVAILABLE_ENERGY_HISTORY_BODY })
 
   t.is(result.length, 2, 'should return a result for each ork')
   t.pass()
@@ -131,7 +137,7 @@ test('setAvailableEnergyHistory - uses a different key than setAvailableEnergy',
   })
 
   await setAvailableEnergy(mockCtx, { body: { data: AVAILABLE_ENERGY_DATA } })
-  await setAvailableEnergyHistory(mockCtx, { body: { data: AVAILABLE_ENERGY_DATA } })
+  await setAvailableEnergyHistory(mockCtx, { body: AVAILABLE_ENERGY_HISTORY_BODY })
 
   t.is(keys[0], ELECTRICITY_EXT_DATA_KEYS.AVAIL_ENERGY, 'live available energy uses availableEnergy')
   t.is(keys[1], ELECTRICITY_EXT_DATA_KEYS.AVAIL_ENERGY_HISTORY, 'history uses availableEnergyHistory')

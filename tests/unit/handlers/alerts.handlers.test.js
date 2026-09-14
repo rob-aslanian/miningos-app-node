@@ -461,15 +461,14 @@ test('assertEnabledParamsAreSet - unknown alert key has no known thresholds, so 
   await t.execution(() => assertEnabledParamsAreSet({ 'custom.unknown_alert': { enabled: true } }))
 })
 
-test('assertEnabledParamsAreSet - truthy non-boolean enabled is still gated (matches worker\'s truthy check)', async (t) => {
-  await t.exception(
+test('assertEnabledParamsAreSet - only boolean true is gated', async (t) => {
+  await t.execution(
     () => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: 1 } }),
-    /ERR_ALERT_PARAMS_REQUIRED/,
-    'enabled: 1 must not bypass the threshold requirement'
+    'enabled: 1 is not treated as enabled, so missing thresholds are ignored'
   )
   await t.execution(
     () => assertEnabledParamsAreSet({ 'custom.low_hashrate.warning': { enabled: 1, minHashRateMhs: 50 } }),
-    'enabled: 1 is fine once the threshold is actually set'
+    'enabled: 1 is fine even with a threshold set'
   )
 })
 

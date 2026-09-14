@@ -39,7 +39,7 @@ const setAvailableEnergyHistory = async (ctx, req) => {
     {
       type: WORKER_TYPES.ELECTRICITY,
       key: ELECTRICITY_EXT_DATA_KEYS.AVAIL_ENERGY_HISTORY,
-      value: req.body.data
+      value: req.body
     })
 }
 

@@ -2117,6 +2117,7 @@ test("handlers: appendWorkLogEntry calls saveThingComment with the right rack/th
   ctx._workOrderRackId = RACK;
   await handlers.appendWorkLogEntry(ctx, {
     ...userMeta(),
+<<<<<<< HEAD
     params: { id: "wo-1" },
     body: { text: "replaced PSU" },
   });
@@ -2130,6 +2131,100 @@ function mkRep() {
   const headers = {};
   let body;
   let status = 200;
+=======
+    params: { id: 'wo-1' },
+    body: { text: 'replaced PSU' }
+  })
+  t.is(captured.rackId, RACK)
+  t.is(captured.thingId, 'wo-1')
+  t.is(captured.comment, 'replaced PSU')
+  t.is(captured.user, 'op@test')
+})
+
+test('handlers: appendWorkOrderNote tags the comment as a note', async (t) => {
+  let captured
+  const ctx = createMockCtxWithOrks(
+    [{ rpcPublicKey: 'k' }],
+    async (_k, method, params) => {
+      if (method === 'listThings') return [{ id: 'wo-1', info: { status: 'open' } }]
+      if (method === 'saveThingComment') { captured = params; return 1 }
+      return null
+    }
+  )
+  ctx._workOrderRackId = RACK
+  await handlers.appendWorkOrderNote(ctx, {
+    ...userMeta(),
+    params: { id: 'wo-1' },
+    body: { text: 'correction: HB-2 was the faulty board' }
+  })
+  t.is(captured.rackId, RACK)
+  t.is(captured.thingId, 'wo-1')
+  t.is(captured.comment, 'correction: HB-2 was the faulty board')
+  t.is(captured.user, 'op@test')
+  t.is(captured.kind, 'note')
+})
+
+test('handlers: appendWorkOrderNote works on closed WOs and 404s on missing ones', async (t) => {
+  let captured
+  const ctx = createMockCtxWithOrks(
+    [{ rpcPublicKey: 'k' }],
+    async (_k, method, params) => {
+      if (method === 'listThings') return params.query?.id === 'wo-1' ? [{ id: 'wo-1', info: { status: 'closed' } }] : []
+      if (method === 'saveThingComment') { captured = params; return 1 }
+      return null
+    }
+  )
+  ctx._workOrderRackId = RACK
+  await handlers.appendWorkOrderNote(ctx, {
+    ...userMeta(), params: { id: 'wo-1' }, body: { text: 'warranty claim filed a day late' }
+  })
+  t.is(captured.kind, 'note', 'closed WOs still accept notes')
+
+  await t.exception(
+    () => handlers.appendWorkOrderNote(ctx, {
+      ...userMeta(), params: { id: 'wo-missing' }, body: { text: 'x' }
+    }),
+    /ERR_WORK_ORDER_NOT_FOUND/
+  )
+})
+
+test('handlers: listWorkOrderNotes requests only notes and returns them sorted', async (t) => {
+  let lastList
+  const ctx = createMockCtxWithOrks(
+    [{ rpcPublicKey: 'k' }],
+    async (_k, method, params) => {
+      if (method !== 'listThings') return null
+      lastList = params
+      if (params.query?.id !== 'wo-1') return []
+      return [{
+        id: 'wo-1',
+        comments: [
+          { id: 'c-2', ts: 200, comment: 'second note', user: 'b@test', kind: 'note' },
+          { id: 'c-3', ts: 50, comment: 'work log entry', user: 'a@test' },
+          { id: 'c-1', ts: 100, comment: 'first note', user: 'a@test', kind: 'note' }
+        ]
+      }]
+    }
+  )
+
+  const notes = await handlers.listWorkOrderNotes(ctx, { params: { id: 'wo-1' } })
+  t.is(lastList.commentsKind, 'note', 'filter is pushed down to the worker')
+  t.alike(notes, [
+    { id: 'c-1', ts: 100, text: 'first note', user: 'a@test' },
+    { id: 'c-2', ts: 200, text: 'second note', user: 'b@test' }
+  ], 'untagged work-log entries are dropped and notes come back sorted by ts')
+
+  await t.exception(
+    () => handlers.listWorkOrderNotes(ctx, { params: { id: 'wo-missing' } }),
+    /ERR_WORK_ORDER_NOT_FOUND/
+  )
+})
+
+function mkRep () {
+  const headers = {}
+  let body
+  let status = 200
+>>>>>>> 0f26b9ab3626966adc91cf2ecdff04ac3bcd43ed
   return {
     header: (k, v) => {
       headers[k] = v;
