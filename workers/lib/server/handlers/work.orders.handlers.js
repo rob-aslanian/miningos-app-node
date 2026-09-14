@@ -231,6 +231,7 @@ async function createWorkOrder(ctx, req) {
       err.statusCode = 400;
       throw err;
     }
+    if (part.code) info.deviceCode = part.code;
     info.partsMoves = [
       {
         partId: part.id,
@@ -263,6 +264,7 @@ async function createWorkOrder(ctx, req) {
       err.statusCode = 400;
       throw err;
     }
+    if (part.code) info.deviceCode = part.code;
     info.partsMoves = [
       {
         partId: part.id,
@@ -297,6 +299,7 @@ async function createWorkOrder(ctx, req) {
         })
       : null;
     const ts = Date.now();
+    if (part.code) info.deviceCode = part.code;
     info.partsMoves = [
       {
         partId: part.id,
@@ -478,6 +481,9 @@ async function createWorkOrdersBatch(ctx, req) {
     }
     resolved.push({ device, part });
   }
+
+  const deviceCode = minerToRepair?.code ?? resolved[0]?.part.code;
+  if (deviceCode) info.deviceCode = deviceCode;
 
   const movingIds = new Set(resolved.map((r) => r.part.id));
   const usedIds = new Set();
@@ -710,7 +716,17 @@ async function getWorkOrder(ctx, req) {
     err.statusCode = 404;
     throw err;
   }
-  return flat[0];
+  const wo = flat[0];
+  // WOs created before deviceCode was stored only carry the identifier, so
+  // resolve the code here to keep the detail response uniform for the UI.
+  const identifier = wo.info?.minerIdentifier ?? wo.info?.deviceIdentifier;
+  if (!wo.info?.deviceCode && identifier) {
+    const part = await _resolvePartByIdentifier(ctx, identifier).catch(
+      () => null,
+    );
+    if (part?.code) wo.info.deviceCode = part.code;
+  }
+  return wo;
 }
 
 async function appendWorkLogEntry(ctx, req) {
