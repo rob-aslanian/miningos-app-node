@@ -191,9 +191,9 @@ function groupByBucket (entries, bucketSize) {
   return buckets
 }
 
-function flattenPoolStatsHistory (results) {
-  const entries = []
-  if (!Array.isArray(results)) return entries
+function flattenPoolHashrateHistory (results) {
+  const samples = []
+  if (!Array.isArray(results)) return samples
 
   for (const res of results) {
     if (!res || res.error) continue
@@ -201,19 +201,27 @@ function flattenPoolStatsHistory (results) {
     if (!Array.isArray(data)) continue
 
     for (const entry of data) {
-      if (!entry) continue
-      const ts = Number(entry.ts)
-      if (!ts || !Array.isArray(entry.stats)) continue
-      entries.push({ ts, stats: entry.stats })
+      if (!entry || !Array.isArray(entry.hashrateHistory)) continue
+      for (const sample of entry.hashrateHistory) {
+        if (!sample) continue
+        const ts = Number(sample.ts)
+        if (!ts) continue
+        samples.push({
+          ts,
+          poolType: sample.poolType,
+          username: sample.username,
+          hashrate: sample.hashrate
+        })
+      }
     }
   }
 
-  return entries
+  return samples
 }
 
 /**
  * Site-wide pool-reported hashrate per report bucket, from the minerpool
- * workers' raw stats snapshots (H/s). Each account's samples are averaged
+ * workers' hashrate-history samples (H/s). Each account's samples are averaged
  * within the bucket before summing across accounts, so accounts polling at
  * different rates (or served by different racks) don't skew the site total.
  *
@@ -228,13 +236,9 @@ async function resolvePoolHashrateForBuckets (ctx, { start, end, buckets }) {
   const results = await ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
     type: WORKER_TYPES.MINERPOOL,
     query: {
-      key: MINERPOOL_EXT_DATA_KEYS.STATS_HISTORY,
+      key: MINERPOOL_EXT_DATA_KEYS.HASHRATE_HISTORY,
       start,
-      end,
-      // Projected on the rack before the data travels: a month of raw 5m
-      // snapshots is ~10MB with full stat docs but ~2MB with only the fields
-      // this calculation reads.
-      fields: { ts: 1, 'stats.poolType': 1, 'stats.username': 1, 'stats.hashrate': 1 }
+      end
     }
   })
 
@@ -257,19 +261,17 @@ async function resolvePoolHashrateForBuckets (ctx, { start, end, buckets }) {
     return idx >= 0 && ts <= sorted[idx].endTs ? idx : -1
   }
 
-  for (const { ts, stats } of flattenPoolStatsHistory(results)) {
-    const idx = findBucketIdx(ts)
+  for (const sample of flattenPoolHashrateHistory(results)) {
+    const idx = findBucketIdx(sample.ts)
     if (idx === -1) continue
 
-    for (const stat of stats) {
-      const hashrate = Number(stat?.hashrate)
-      if (!Number.isFinite(hashrate)) continue
-      const account = `${stat.poolType}:${stat.username}`
-      const acc = accountsPerBucket[idx].get(account) || { total: 0, count: 0 }
-      acc.total += hashrate
-      acc.count++
-      accountsPerBucket[idx].set(account, acc)
-    }
+    const hashrate = Number(sample.hashrate)
+    if (!Number.isFinite(hashrate)) continue
+    const account = `${sample.poolType}:${sample.username}`
+    const acc = accountsPerBucket[idx].get(account) || { total: 0, count: 0 }
+    acc.total += hashrate
+    acc.count++
+    accountsPerBucket[idx].set(account, acc)
   }
 
   sorted.forEach((bucket, idx) => {
@@ -330,7 +332,7 @@ module.exports = {
   calculatePoolsSummary,
   getPoolBalanceHistory,
   flattenTransactionResults,
-  flattenPoolStatsHistory,
+  flattenPoolHashrateHistory,
   resolvePoolHashrateForBuckets,
   groupByBucket,
   getPoolThingConfig,

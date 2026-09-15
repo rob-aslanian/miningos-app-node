@@ -48,11 +48,21 @@ function renderWorkOrdersBulkCsv (wos) {
   return _renderCsvRows(wos.flatMap(_rowsForWorkOrder))
 }
 
+const REPAIRED_PART_STATUS = 'ok_repaired'
+
+// Repaired column: the part removed from the miner, else a part whose status was
+// switched to repaired. 'diagnosis' moves only list what the miner contained, so
+// they never qualify — with neither kind of move the column stays empty.
+function _findRepairedMove (moves) {
+  return moves.find(m => m.role === 'out') ||
+    moves.find(m => m.role === 'original' && m.toStatus === REPAIRED_PART_STATUS && m.fromStatus !== m.toStatus)
+}
+
 function renderRmaCsv (workOrders) {
   const rows = workOrders.map((wo) => {
     const info = wo.info || {}
     const moves = Array.isArray(info.partsMoves) ? info.partsMoves : []
-    const repaired = moves.find(m => m.role === 'repaired') || moves.find(m => m.role === 'diagnosis') || moves[0] || {}
+    const repaired = _findRepairedMove(moves) || {}
     const replaced = moves.find(m => m.role === 'replacement') || {}
     const repairTs = info.closedAt ?? info.createdAt
     const minerModel = displayMinerModel(info.deviceModel)

@@ -2268,143 +2268,62 @@ test("handlers: exportWorkOrder docx returns 501 (deferred to phase 2)", async (
 test("handlers: exportWorkOrder 404s when WO not found by id or code", async (t) => {
   const ctx = createMockCtxWithOrks([{ rpcPublicKey: "k" }], async () => []);
   await t.exception(
-    () =>
-      handlers.exportWorkOrder(
-        ctx,
-        { params: { id: "nope" }, query: { format: "csv" } },
-        mkRep(),
-      ),
-    /ERR_WORK_ORDER_NOT_FOUND/,
-  );
-});
+    () => handlers.exportWorkOrder(ctx, { params: { id: 'nope' }, query: { format: 'csv' } }, mkRep()),
+    /ERR_WORK_ORDER_NOT_FOUND/
+  )
+})
 
-test("handlers: exportWorkOrder csv sets text/csv content-type and attachment filename", async (t) => {
-  const wo = {
-    id: "wo-1",
-    code: "IVI-2-0001",
-    info: { status: "open", type: 2, partsMoves: [] },
-  };
-  const ctx = createMockCtxWithOrks([{ rpcPublicKey: "k" }], async () => [wo]);
-  const rep = mkRep();
-  await handlers.exportWorkOrder(
-    ctx,
-    { params: { id: "IVI-2-0001" }, query: { format: "csv" } },
-    rep,
-  );
-  t.is(rep._headers["content-type"], "text/csv; charset=utf-8");
-  t.ok(rep._headers["content-disposition"].includes("IVI-2-0001.csv"));
-  t.ok(
-    typeof rep._body === "string" && rep._body.startsWith("code,status,type"),
-  );
-});
+test('handlers: exportWorkOrder csv sets text/csv content-type and attachment filename', async (t) => {
+  const wo = { id: 'wo-1', code: 'IVI-2-0001', info: { status: 'open', type: 2, partsMoves: [] } }
+  const ctx = createMockCtxWithOrks([{ rpcPublicKey: 'k' }], async () => [wo])
+  const rep = mkRep()
+  await handlers.exportWorkOrder(ctx, { params: { id: 'IVI-2-0001' }, query: { format: 'csv' } }, rep)
+  t.is(rep._headers['content-type'], 'text/csv; charset=utf-8')
+  t.ok(rep._headers['content-disposition'].includes('IVI-2-0001.csv'))
+  t.ok(typeof rep._body === 'string' && rep._body.startsWith('code,status,type'))
+})
 
-test("handlers: exportWorkOrdersRma returns CSV of only the MicroBT Miner WOs selected", async (t) => {
-  const miner = {
-    id: "wo-3",
-    code: "IVI-3-0001",
-    info: {
-      type: 3,
-      deviceModel: "M63S++_VL28",
-      deviceIdentifier: "MINER-SN-1",
-      issue: "low hashrate",
-      finalResult: "replaced HB",
-      remarks: "r",
-      assignedTo: "eng@test",
-      createdAt: 1,
-      partsMoves: [
-        { role: "diagnosis", partCode: "HB-OLD" },
-        { role: "replacement", partCode: "HB-NEW" },
-      ],
-    },
-  };
-  const move = {
-    id: "wo-2",
-    code: "IVI-2-0002",
-    info: { type: 2, partsMoves: [] },
-  };
-  const ctx = createMockCtxWithOrks([{ rpcPublicKey: "k" }], async () => [
-    miner,
-    move,
-  ]);
-  const rep = mkRep();
-  await handlers.exportWorkOrdersRma(
-    ctx,
-    { query: { ids: "IVI-3-0001,IVI-2-0002" } },
-    rep,
-  );
-  t.is(rep._headers["content-type"], "text/csv; charset=utf-8");
-  t.ok(rep._headers["content-disposition"].includes("rma.csv"));
-  const lines = rep._body.trim().split("\r\n");
-  t.is(lines.length, 2, "header + 1 MicroBT Miner row (Move WO ignored)");
-  t.ok(lines[0].startsWith("Ticket,Repaired type"));
-  t.ok(lines[1].startsWith("IVI-3-0001,"));
-  t.ok(lines[1].includes("HB-OLD") && lines[1].includes("HB-NEW"));
-});
+test('handlers: exportWorkOrdersRma returns CSV of only the MicroBT Miner WOs selected', async (t) => {
+  const miner = { id: 'wo-3', code: 'IVI-3-0001', info: { type: 3, deviceModel: 'M63S++_VL28', deviceIdentifier: 'MINER-SN-1', issue: 'low hashrate', finalResult: 'replaced HB', remarks: 'r', assignedTo: 'eng@test', createdAt: 1, partsMoves: [{ role: 'diagnosis', partCode: 'HB-OLD' }, { role: 'out', partCode: 'HB-OLD' }, { role: 'replacement', partCode: 'HB-NEW', replacesPartCode: 'HB-OLD' }] } }
+  const move = { id: 'wo-2', code: 'IVI-2-0002', info: { type: 2, partsMoves: [] } }
+  const ctx = createMockCtxWithOrks([{ rpcPublicKey: 'k' }], async () => [miner, move])
+  const rep = mkRep()
+  await handlers.exportWorkOrdersRma(ctx, { query: { ids: 'IVI-3-0001,IVI-2-0002' } }, rep)
+  t.is(rep._headers['content-type'], 'text/csv; charset=utf-8')
+  t.ok(rep._headers['content-disposition'].includes('rma.csv'))
+  const lines = rep._body.trim().split('\r\n')
+  t.is(lines.length, 2, 'header + 1 MicroBT Miner row (Move WO ignored)')
+  t.ok(lines[0].startsWith('Ticket,Repaired type'))
+  t.ok(lines[1].startsWith('IVI-3-0001,'))
+  t.ok(lines[1].includes('HB-OLD') && lines[1].includes('HB-NEW'))
+})
 
-test("handlers: exportWorkOrdersBulk returns one combined CSV for every selected WO regardless of type", async (t) => {
-  const register = {
-    id: "wo-1",
-    code: "IVI-1-0001",
-    info: { type: 1, deviceType: "psu", partsMoves: [] },
-  };
-  const repair = {
-    id: "wo-3",
-    code: "IVI-3-0001",
-    info: {
-      type: 3,
-      deviceModel: "M63S++_VL28",
-      issue: "low hashrate",
-      partsMoves: [{ role: "diagnosis", partCode: "HB-OLD" }],
-    },
-  };
-  const ctx = createMockCtxWithOrks([{ rpcPublicKey: "k" }], async () => [
-    register,
-    repair,
-  ]);
-  const rep = mkRep();
-  await handlers.exportWorkOrdersBulk(
-    ctx,
-    { query: { ids: "IVI-1-0001,IVI-3-0001" } },
-    rep,
-  );
-  t.is(rep._headers["content-type"], "text/csv; charset=utf-8");
-  t.ok(rep._headers["content-disposition"].includes("work-orders.csv"));
-  const lines = rep._body.trim().split("\r\n");
-  t.is(lines.length, 3, "header + one row per WO");
-  t.ok(lines[1].startsWith("IVI-1-0001,"));
-  t.ok(lines[2].startsWith("IVI-3-0001,"));
-});
+test('handlers: exportWorkOrdersBulk returns one combined CSV for every selected WO regardless of type', async (t) => {
+  const register = { id: 'wo-1', code: 'IVI-1-0001', info: { type: 1, deviceType: 'psu', partsMoves: [] } }
+  const repair = { id: 'wo-3', code: 'IVI-3-0001', info: { type: 3, deviceModel: 'M63S++_VL28', issue: 'low hashrate', partsMoves: [{ role: 'diagnosis', partCode: 'HB-OLD' }] } }
+  const ctx = createMockCtxWithOrks([{ rpcPublicKey: 'k' }], async () => [register, repair])
+  const rep = mkRep()
+  await handlers.exportWorkOrdersBulk(ctx, { query: { ids: 'IVI-1-0001,IVI-3-0001' } }, rep)
+  t.is(rep._headers['content-type'], 'text/csv; charset=utf-8')
+  t.ok(rep._headers['content-disposition'].includes('work-orders.csv'))
+  const lines = rep._body.trim().split('\r\n')
+  t.is(lines.length, 3, 'header + one row per WO')
+  t.ok(lines[1].startsWith('IVI-1-0001,'))
+  t.ok(lines[2].startsWith('IVI-3-0001,'))
+})
 
-test("handlers: exportWorkOrdersBulk unions headers across differently-shaped work order types", async (t) => {
-  const register = {
-    id: "wo-1",
-    code: "IVI-1-0001",
-    info: { type: 1, deviceType: "psu", partsMoves: [] },
-  };
-  const repair = {
-    id: "wo-3",
-    code: "IVI-3-0001",
-    info: { type: 3, issue: "low hashrate", partsMoves: [] },
-  };
-  const ctx = createMockCtxWithOrks([{ rpcPublicKey: "k" }], async () => [
-    register,
-    repair,
-  ]);
-  const rep = mkRep();
-  await handlers.exportWorkOrdersBulk(
-    ctx,
-    { query: { ids: "IVI-1-0001,IVI-3-0001" } },
-    rep,
-  );
-  const [header] = rep._body.trim().split("\r\n");
-  t.ok(
-    header.includes("deviceType"),
-    "register-only field present in union header",
-  );
-  t.ok(header.includes("issue"), "repair-only field present in union header");
-});
+test('handlers: exportWorkOrdersBulk unions headers across differently-shaped work order types', async (t) => {
+  const register = { id: 'wo-1', code: 'IVI-1-0001', info: { type: 1, deviceType: 'psu', partsMoves: [] } }
+  const repair = { id: 'wo-3', code: 'IVI-3-0001', info: { type: 3, issue: 'low hashrate', partsMoves: [] } }
+  const ctx = createMockCtxWithOrks([{ rpcPublicKey: 'k' }], async () => [register, repair])
+  const rep = mkRep()
+  await handlers.exportWorkOrdersBulk(ctx, { query: { ids: 'IVI-1-0001,IVI-3-0001' } }, rep)
+  const [header] = rep._body.trim().split('\r\n')
+  t.ok(header.includes('deviceType'), 'register-only field present in union header')
+  t.ok(header.includes('issue'), 'repair-only field present in union header')
+})
 
-test("handlers: exportWorkOrdersBulk emits one row per partsMove, not one row per WO", async (t) => {
+test('handlers: exportWorkOrdersBulk emits one row per partsMove, not one row per WO', async (t) => {
   const repair = {
     id: "wo-3",
     code: "IVI-3-0001",

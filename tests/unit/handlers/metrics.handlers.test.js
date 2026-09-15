@@ -484,12 +484,15 @@ test('getHashrate - pool=true merges pool hashrate per bucket, in MH/s', async (
       jRequest: async (key, method, payload) => {
         if (method === 'getWrkExtData') {
           capturedExtData = payload
-          return [
-            // First bucket: account a averages (100e6 + 200e6) / 2, account b adds 50e6
-            { ts: 1700006460000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 100e6 }] },
-            { ts: 1700006760000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 200e6 }, { poolType: 'ocean', username: 'b', hashrate: 50e6 }] }
-            // Second bucket: no samples
-          ]
+          return [{
+            hashrateHistory: [
+              // First bucket: account a averages (100e6 + 200e6) / 2, account b adds 50e6
+              { poolType: 'f2pool', ts: 1700006460000, username: 'a', hashrate: 100e6 },
+              { poolType: 'f2pool', ts: 1700006760000, username: 'a', hashrate: 200e6 },
+              { poolType: 'ocean', ts: 1700006760000, username: 'b', hashrate: 50e6 }
+              // Second bucket: no samples
+            ]
+          }]
         }
         return [
           { ts: 1700006400000, hashrate_mhs_5m_sum_aggr: 100000 },
@@ -504,7 +507,7 @@ test('getHashrate - pool=true merges pool hashrate per bucket, in MH/s', async (
   })
 
   t.is(capturedExtData.type, 'minerpool', 'should query the minerpool workers')
-  t.is(capturedExtData.query.key, 'stats-history', 'should read the raw stats snapshots')
+  t.is(capturedExtData.query.key, 'hashrate-history', 'should read hashrate history samples')
   t.is(capturedExtData.query.start, 1700000000000, 'should cover the requested range')
   t.is(capturedExtData.query.end, 1700100000000, 'should cover the requested range')
   t.ok(capturedExtData.query.fields, 'should ship a rack-side projection to bound the payload')
@@ -520,10 +523,12 @@ test('getHashrate - pool samples outside the bucket window are excluded', async 
     net_r0: {
       jRequest: async (key, method) => {
         if (method === 'getWrkExtData') {
-          return [
-            { ts: 1700006400000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 100e6 }] },
-            { ts: 1700006400000 + 3600000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 900e6 }] }
-          ]
+          return [{
+            hashrateHistory: [
+              { poolType: 'f2pool', ts: 1700006400000, username: 'a', hashrate: 100e6 },
+              { poolType: 'f2pool', ts: 1700006400000 + 3600000, username: 'a', hashrate: 900e6 }
+            ]
+          }]
         }
         return [{ ts: '1700006400000-1700009999999', hashrate_mhs_5m_sum_aggr: 100000 }]
       }

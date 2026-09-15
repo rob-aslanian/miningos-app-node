@@ -8,7 +8,7 @@ const {
   calculatePoolsSummary,
   getPoolBalanceHistory,
   flattenTransactionResults,
-  flattenPoolStatsHistory,
+  flattenPoolHashrateHistory,
   resolvePoolHashrateForBuckets,
   groupByBucket,
   getPoolThingConfig,
@@ -329,28 +329,35 @@ test('groupByBucket - handles missing timestamps', (t) => {
   t.pass()
 })
 
-test('flattenPoolStatsHistory - extracts timestamped stats snapshots', (t) => {
+test('flattenPoolHashrateHistory - extracts timestamped hashrate samples', (t) => {
   const results = [
     [
-      { ts: '1770000000000', stats: [{ poolType: 'f2pool', username: 'a', hashrate: 1e6 }] },
-      { ts: 1770000300000, stats: [{ poolType: 'ocean', username: 'b', hashrate: 2e6 }] },
-      { ts: 1770000600000 }, // no stats array
-      { stats: [] } // no ts
+      {
+        ts: 'undefined',
+        hashrateHistory: [
+          { poolType: 'f2pool', ts: '1770000000000', username: 'a', hashrate: 1e6 },
+          { poolType: 'ocean', ts: 1770000300000, username: 'b', hashrate: 2e6 },
+          { poolType: 'f2pool', username: 'c', hashrate: 3e6 }, // no ts
+          null
+        ]
+      },
+      { ts: 1770000600000 }, // no hashrateHistory
+      { hashrateHistory: [] }
     ],
     { error: 'ERR_ORK_DOWN' },
     null
   ]
 
-  const entries = flattenPoolStatsHistory(results)
-  t.is(entries.length, 2, 'should keep only valid snapshots')
-  t.is(entries[0].ts, 1770000000000, 'should coerce string timestamps')
-  t.is(entries[1].stats[0].username, 'b')
+  const samples = flattenPoolHashrateHistory(results)
+  t.is(samples.length, 2, 'should keep only valid samples')
+  t.is(samples[0].ts, 1770000000000, 'should coerce string timestamps')
+  t.is(samples[1].username, 'b')
   t.pass()
 })
 
-test('flattenPoolStatsHistory - handles non-array input', (t) => {
-  t.alike(flattenPoolStatsHistory(null), [])
-  t.alike(flattenPoolStatsHistory(undefined), [])
+test('flattenPoolHashrateHistory - handles non-array input', (t) => {
+  t.alike(flattenPoolHashrateHistory(null), [])
+  t.alike(flattenPoolHashrateHistory(undefined), [])
   t.pass()
 })
 
@@ -361,11 +368,15 @@ test('resolvePoolHashrateForBuckets - averages per account then sums accounts', 
     net_r0: {
       jRequest: async (key, method, payload) => {
         capturedPayload = payload
-        return [
-          { ts: 1770000060000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 100e6 }] },
-          { ts: 1770000360000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 300e6 }, { poolType: 'ocean', username: 'b', hashrate: 50e6 }] },
-          { ts: 1770003660000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 500e6 }] }
-        ]
+        return [{
+          ts: 'undefined',
+          hashrateHistory: [
+            { poolType: 'f2pool', ts: 1770000060000, username: 'a', hashrate: 100e6 },
+            { poolType: 'f2pool', ts: 1770000360000, username: 'a', hashrate: 300e6 },
+            { poolType: 'ocean', ts: 1770000360000, username: 'b', hashrate: 50e6 },
+            { poolType: 'f2pool', ts: 1770003660000, username: 'a', hashrate: 500e6 }
+          ]
+        }]
       }
     }
   })
@@ -380,10 +391,15 @@ test('resolvePoolHashrateForBuckets - averages per account then sums accounts', 
   })
 
   t.is(capturedPayload.type, WORKER_TYPES.MINERPOOL, 'should query minerpool workers')
-  t.is(capturedPayload.query.key, 'stats-history', 'should read raw stats snapshots')
+  t.is(capturedPayload.query.key, 'hashrate-history', 'should read hashrate history samples')
   t.alike(
     capturedPayload.query.fields,
-    { ts: 1, 'stats.poolType': 1, 'stats.username': 1, 'stats.hashrate': 1 },
+    {
+      'hashrateHistory.ts': 1,
+      'hashrateHistory.poolType': 1,
+      'hashrateHistory.username': 1,
+      'hashrateHistory.hashrate': 1
+    },
     'should project rack-side to only the fields the calculation reads'
   )
   t.is(byBucket.get(1770000000000), 250, 'avg of a (200e6) plus b (50e6), in MH/s')
@@ -396,11 +412,13 @@ test('resolvePoolHashrateForBuckets - unsorted buckets and boundary samples', as
   const mockCtx = withDataProxy({
     conf: { orks: [{ rpcPublicKey: 'key1' }] },
     net_r0: {
-      jRequest: async () => [
-        { ts: 1770000000000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 100e6 }] }, // == startTs
-        { ts: 1770003599999, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 300e6 }] }, // == endTs
-        { ts: 1770003600000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 900e6 }] } // next bucket
-      ]
+      jRequest: async () => [{
+        hashrateHistory: [
+          { poolType: 'f2pool', ts: 1770000000000, username: 'a', hashrate: 100e6 }, // == startTs
+          { poolType: 'f2pool', ts: 1770003599999, username: 'a', hashrate: 300e6 }, // == endTs
+          { poolType: 'f2pool', ts: 1770003600000, username: 'a', hashrate: 900e6 } // next bucket
+        ]
+      }]
     }
   })
 

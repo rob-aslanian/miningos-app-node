@@ -959,9 +959,11 @@ test('Api', { timeout: 90000 }, async (main) => {
           return Promise.resolve([{ ts: bucketTs, hashrate_mhs_5m_sum_aggr: 100000 }])
         }
         if (method === 'getWrkExtData') {
-          return Promise.resolve([
-            { ts: bucketTs + 60000, stats: [{ poolType: 'f2pool', username: 'a', hashrate: 100e6 }] }
-          ])
+          return Promise.resolve([{
+            hashrateHistory: [
+              { poolType: 'f2pool', ts: bucketTs + 60000, username: 'a', hashrate: 100e6 }
+            ]
+          }])
         }
         if (method === 'listThings') return Promise.resolve(mockMiners)
         if (method === 'getThingsCount') return Promise.resolve(mockMiners.length)

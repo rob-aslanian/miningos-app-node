@@ -19,10 +19,16 @@ function mockCtx ({ buckets = 3, interval = HOUR_MS, globalData = {}, hashrateMh
     net_r0: {
       jRequest: async (key, method, params) => {
         if (method === 'getWrkExtData') {
-          return Array.from({ length: buckets }, (_, i) => ({
-            ts: START + i * interval + 1000,
-            stats: poolHashrateHs === null ? [] : [{ poolType: 'f2pool', username: 'account-a', hashrate: poolHashrateHs }]
-          }))
+          return [{
+            hashrateHistory: poolHashrateHs === null
+              ? []
+              : Array.from({ length: buckets }, (_, i) => ({
+                poolType: 'f2pool',
+                ts: START + i * interval + 1000,
+                username: 'account-a',
+                hashrate: poolHashrateHs
+              }))
+          }]
         }
         return Array.from({ length: buckets }, (_, i) => ({
           ts: START + i * interval,

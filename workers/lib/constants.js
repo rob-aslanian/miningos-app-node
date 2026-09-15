@@ -70,6 +70,7 @@ const WORK_ORDER_FILE_MAX_BYTES_DEFAULT = 10 * 1024 * 1024
 const WORK_ORDER_FILE_COUNT_CAP_DEFAULT = 20
 const WORK_ORDER_FILE_MIME_ALLOWLIST_DEFAULT = [
   'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  'image/heic', 'image/heif',
   'application/pdf', 'text/plain', 'text/csv', 'application/json'
 ]
 
@@ -775,7 +776,8 @@ const PERIOD_TYPES = {
 const MINERPOOL_EXT_DATA_KEYS = {
   TRANSACTIONS: 'transactions',
   STATS: 'stats',
-  STATS_HISTORY: 'stats-history'
+  STATS_HISTORY: 'stats-history',
+  HASHRATE_HISTORY: 'hashrate-history'
 }
 
 const ELECTRICITY_EXT_DATA_KEYS = {
