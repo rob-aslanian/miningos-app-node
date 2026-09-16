@@ -48,6 +48,8 @@
     "admeStats": true,
     "alertsHistoricalLogEnabled": true,
     "isReportingEnabled": true,
+    "projectFinancials": true,
+    "poolRebates": true,
     "centralDCSSetup": {
       "enabled": false,
       "tag": "t-dcs"
