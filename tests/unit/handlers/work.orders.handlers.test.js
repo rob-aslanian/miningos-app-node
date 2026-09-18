@@ -1339,49 +1339,6 @@ test("handlers: createWorkOrdersBatch Type 3 updates the miner named by info.min
     ...userMeta(),
     body: {
       type: 3,
-<<<<<<< HEAD
-      devices: [
-        {
-          deviceType: "hashboard",
-          deviceModel: "M56",
-          deviceIdentifier: "HB-1",
-        },
-      ],
-      issue: "hashboard dead",
-      info: { minerIdentifier: "miner-1", deviceStatus: "ok_repaired" },
-    },
-  });
-  const minerPush = pushed.find((p) => p.action === "updateThing");
-  const regPush = pushed.find((p) => p.action === "registerThing");
-  t.is(
-    minerPush.params[0].id,
-    "miner-1",
-    "status update targets the miner, not the parts",
-  );
-  t.is(minerPush.params[0].rackId, "miner-rack-1");
-  t.is(minerPush.params[0].info.status, "ok_repaired");
-  t.is(minerPush.params[0].info.workOrderId, regPush.params[0].id);
-  const statusMove = regPush.params[0].info.partsMoves.find(
-    (m) => m.role === "status_change",
-  );
-  t.is(statusMove.partId, "miner-1");
-  t.is(statusMove.fromStatus, "faulty");
-  t.is(statusMove.toStatus, "ok_repaired");
-  const diagnosisMoves = regPush.params[0].info.partsMoves.filter(
-    (m) => m.role === "diagnosis",
-  );
-  t.is(diagnosisMoves.length, 1, "parts keep their diagnosis moves");
-});
-
-test("handlers: createWorkOrdersBatch Type 3 keeps the miner as the root subject, not the first spare part", async (t) => {
-  const pushed = [];
-  const ctx = createMockCtxWithOrks(
-    [{ rpcPublicKey: "k" }],
-    async (_k, method, params) => {
-      if (method === "pushAction") {
-        pushed.push(params);
-        return { id: "a", errors: [] };
-=======
       devices: [{ deviceType: 'hashboard', deviceModel: 'M56', deviceIdentifier: 'HB-1' }],
       issue: 'hashboard dead',
       info: { minerIdentifier: 'miner-1', deviceStatus: 'ok_repaired' }
@@ -1414,7 +1371,6 @@ test('handlers: createWorkOrdersBatch Type 3 keeps the miner as the root subject
       const or = params.query?.$or || []
       if (or.some(c => c.id === 'pirxAnVkFzZLTEZ')) {
         return [{ id: 'pirxAnVkFzZLTEZ', code: 'MN-750', type: 'miner-wm-m63spp', rack: 'miner-rack-1', info: { serialNum: 'WM63SPP00750' } }]
->>>>>>> e1196a492e348780ddc4fdd97bb092bea6c537a2
       }
       if (method === "listThings") {
         const or = params.query?.$or || [];
