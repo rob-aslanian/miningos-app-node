@@ -38,10 +38,15 @@ const {
   getIntervalConfig,
   mergeGroupedField,
   extractKeyEntry,
+  rollupLocalMonths,
+  localMonthsInRange,
+  localMonthKey,
   mhsToThs,
   rackFilterFor
 } = require('../../metrics.utils')
 const { parseRacks } = require('../lib/queryUtils')
+const { assertTimezone, DEFAULT_TIMEZONE } = require('../lib/export/mappers')
+const { createMonthlyHashesCache } = require('../lib/monthlyHashesCache')
 const { resolvePoolHashrateForBuckets } = require('./pools.handlers')
 const { extractGlobalConfig } = require('./site.utils')
 const { normalizeAvailability } = require('../lib/export/types/forecast.export')
@@ -63,6 +68,10 @@ function hasRackFilter (req) {
 function avgObjectValues (obj) {
   const values = Object.values(obj || {}).map(Number).filter(Boolean)
   return safeDiv(values.reduce((sum, val) => sum + val, 0), values.length)
+}
+
+function hashrateAggrField (container) {
+  return container ? AGGR_FIELDS.HASHRATE_SUM_CONTAINER_GROUP_AGGR : AGGR_FIELDS.HASHRATE_SUM
 }
 
 function readHashrate (val, container) {
@@ -99,8 +108,105 @@ function pageHashrate (req, { log, summary }) {
   }
 }
 
+const monthlyHashesCache = createMonthlyHashesCache()
+
+// A calendar month is rolled up from hourly buckets, so it is only offered for the
+// series that HAS hourly buckets: the site-wide one, optionally scoped to a container.
+// A grouped or rack-scoped request is served off the daily grouped log instead, where
+// there is no per-hour pool pairing to roll up and an "hours reported" count would lie.
+function wantsMonthlyRollup (req) {
+  return req.query.interval === '1M' && !req.query.groupBy && !hasRackFilter(req)
+}
+
 async function getHashrate (ctx, req) {
+  // '1M' means a calendar-month rollup, as it already does for consumption - not the
+  // store's rolling-30-day bucket that getIntervalConfig would hand back for it.
+  if (wantsMonthlyRollup(req)) return getMonthlyHashrate(ctx, req)
+
   return pageHashrate(req, await resolveHashrate(ctx, req))
+}
+
+/**
+ * Calendar months instead of raw buckets, in `timezone` when one is given (the
+ * consumption endpoint's '1M' is UTC-aligned; invoicing bills the site's own month).
+ *
+ * The store cannot bucket by calendar month (groupRange '1M' is a rolling 30 days)
+ * and its daily buckets are UTC-aligned, so a month is still built from hourly ones -
+ * but rolling them up HERE means the caller receives a handful of rows instead of the
+ * ~8,760 buckets a year of hours costs to ship and re-aggregate.
+ *
+ * Months that have ended are served from a per-process cache, so a repeat request
+ * only recomputes the running month. Months the site reported nothing for are absent
+ * rather than zero-filled; the caller knows the window it asked for and can say so.
+ */
+async function getMonthlyHashrate (ctx, req) {
+  const { start, end } = validateStartEnd(req)
+  // A zone the runtime does not know throws a raw RangeError out of Intl; the exports
+  // already turn that into a named 400, so the endpoint answers the same way.
+  const timezone = assertTimezone(req.query.timezone || DEFAULT_TIMEZONE)
+  const now = Date.now()
+  const flags = {
+    nominal: req.query.nominal === true || req.query.nominal === 'true',
+    pool: req.query.pool === true || req.query.pool === 'true',
+    container: req.query.container || null
+  }
+
+  const months = localMonthsInRange(start, end, timezone)
+  // Only a month the request covers end to end is the month itself; a partial edge
+  // month is a slice of one, and must neither be stored as the whole nor answered
+  // with it. The running month still gains hours, so it is never cached either.
+  const cacheable = (month) => month.end < now && month.start >= start && month.end <= end
+  const rows = new Map()
+  const missing = []
+
+  for (const month of months) {
+    const cached = cacheable(month)
+      ? monthlyHashesCache.get(monthlyHashesCache.key(month.key, timezone, flags), now)
+      : undefined
+
+    if (cached !== undefined) rows.set(month.key, cached)
+    else missing.push(month)
+  }
+
+  if (missing.length) {
+    // One query over the span the misses cover, clamped to what was actually asked
+    // for: the first and last month of a range are usually partial.
+    const span = {
+      start: Math.max(start, missing[0].start),
+      end: Math.min(end, missing[missing.length - 1].end)
+    }
+    const { log } = await resolveHashrate(ctx, {
+      ...req,
+      query: { ...req.query, ...span, interval: '1h' }
+    })
+
+    for (const row of rollupLocalMonths(log, timezone)) {
+      rows.set(localMonthKey(row.ts, timezone), row)
+    }
+
+    // A completed month the site never reported is cached as null, not skipped: it
+    // produces no row to cache, so leaving it out keeps it permanently missing and
+    // the query span keeps stretching back over it on every request.
+    for (const month of missing) {
+      if (!cacheable(month)) continue
+
+      const key = monthlyHashesCache.key(month.key, timezone, flags)
+      monthlyHashesCache.set(key, rows.get(month.key) ?? null, now)
+    }
+  }
+
+  const log = months.map((month) => rows.get(month.key)).filter(Boolean)
+  const summary = calculateHashrateSummary(log, flags.nominal)
+
+  // The same summary fields the other intervals carry: a monthly response is a coarser
+  // view of the same series, not a different endpoint.
+  if (flags.pool) summary.avgPoolHashrateMhs = calculateAvgPoolHashrate(log)
+
+  if (req.query.current) {
+    summary.currentHashrateMhs = await getCurrentHashrate(ctx, hashrateAggrField(flags.container), flags.container)
+  }
+
+  return { log, totalCount: log.length, summary }
 }
 
 async function resolveHashrate (ctx, req) {
@@ -117,7 +223,7 @@ async function resolveHashrate (ctx, req) {
   const { key, groupRange } = getIntervalConfig(resolveInterval(start, end, req.query.interval))
   const container = req.query.container || null
   const field = container ? LOG_FIELDS.HASHRATE_SUM_CONTAINER_GROUP : LOG_FIELDS.HASHRATE_SUM
-  const aggrField = container ? AGGR_FIELDS.HASHRATE_SUM_CONTAINER_GROUP_AGGR : AGGR_FIELDS.HASHRATE_SUM
+  const aggrField = hashrateAggrField(container)
   // Invoicing needs delivered hashrate against the capacity installed at the time of each
   // bucket, which only the per-bucket aggregate carries. Opt-in: the site nominal alone is
   // served by /auth/site/status/live.
@@ -2054,6 +2160,8 @@ async function getDowntime (ctx, req) {
 module.exports = {
   ...require('../../metrics.utils'),
   getHashrate,
+  getMonthlyHashrate,
+  monthlyHashesCache,
   calculateHashrateSummary,
   calculateGroupedHashrateSummary,
   getConsumption,

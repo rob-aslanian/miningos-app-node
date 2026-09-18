@@ -262,34 +262,136 @@ const mean = (values) => values.length ? sum(values) / values.length : null
 const finiteValues = (entries, field) => entries.map((entry) => entry[field]).filter(Number.isFinite)
 
 // Financial reports use pool data only: summed pool vs summed nominal over the
-// buckets carrying both, so a pool polling gap never dilutes the share.
+// buckets carrying both, so a pool polling gap never dilutes the share. This is
+// the coverage basis used by the per-hour and per-day export rows.
 function poolPctOfNominal (entries) {
   const pairs = entries.filter((entry) => Number.isFinite(entry.poolHashrateMhs) && entry.nominalHashrateMhs > 0)
   if (!pairs.length) return null
   return (sum(pairs.map((entry) => entry.poolHashrateMhs)) / sum(pairs.map((entry) => entry.nominalHashrateMhs))) * 100
 }
 
-function rollupLocalDays (log, timezone) {
-  const dayOf = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' })
-  const days = new Map()
+// Pool share of nominal over the WHOLE invoice period: every bucket with a positive
+// nominal counts in the denominator and a bucket without pool data counts as zero
+// delivered. The invoice bills the calendar month, so hours the pool did not report
+// (site not mining yet, pool outage) lower the percentage instead of being dropped -
+// dropping them switched the denominator to "hours with pool data" and overstated a
+// mid-month start by the coverage ratio (August 2026: 78.9% instead of 52.5%,
+// inflating amortizationPayableUsd and monthlyInvoiceUsd). Null when the pool never
+// reported in the period, so a missing feed is not misread as zero production.
+// Mirrors moria-app-ui invoicePeriodPoolPctOfNominal (PR 3061).
+function invoicePeriodPoolPctOfNominal (entries) {
+  const nominalBuckets = entries.filter((entry) => entry.nominalHashrateMhs > 0)
+  const poolEverReported = nominalBuckets.some((entry) => Number.isFinite(entry.poolHashrateMhs))
+  if (!poolEverReported) return null
+
+  const pool = sum(nominalBuckets.map((entry) => Number.isFinite(entry.poolHashrateMhs) ? entry.poolHashrateMhs : 0))
+  return (pool / sum(nominalBuckets.map((entry) => entry.nominalHashrateMhs))) * 100
+}
+
+// Groups hourly buckets by the label `periodOf` gives them and aggregates each
+// group the way the invoicing rows need it. `poolSeconds` counts only the hours
+// that carried a pool sample, so a polling gap understates the period's delivered
+// hashes rather than reading as lost hashrate - the export marks that, it does not
+// silently fill it in.
+function rollupLocalPeriods (log, periodOf) {
+  const periods = new Map()
 
   for (const entry of log) {
-    const key = dayOf.format(new Date(entry.ts))
-    if (!days.has(key)) days.set(key, [])
-    days.get(key).push(entry)
+    const key = periodOf.format(new Date(entry.ts))
+    if (!periods.has(key)) periods.set(key, [])
+    periods.get(key).push(entry)
   }
 
-  return [...days.values()].map((entries) => {
+  return [...periods.values()].map((entries) => {
     const pool = finiteValues(entries, 'poolHashrateMhs')
 
     return {
       ts: entries[0].ts,
       hashrateMhs: mean(finiteValues(entries, 'hashrateMhs')),
+      // The period's installed capacity, for callers that summarise a run of periods.
+      // `pctOfNominal` is NOT this over hashrateMhs - it stays on the pool basis below,
+      // which pairs the two series hour by hour and can only be computed here.
+      nominalHashrateMhs: mean(finiteValues(entries, 'nominalHashrateMhs')),
       poolHashrateMhs: mean(pool),
       pctOfNominal: poolPctOfNominal(entries),
-      poolSeconds: pool.length * 3600
+      poolSeconds: pool.length * 3600,
+      // How many hours the site reported at all, against which poolSeconds says how
+      // many carried a pool sample - the UI marks a period where the two disagree.
+      reportedHours: entries.length
     }
   })
+}
+
+// Milliseconds to add to an instant to read it as wall clock in `timeZone`.
+function zoneOffsetMs (ts, timeZone) {
+  const parts = {}
+  const formatted = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).formatToParts(new Date(ts))
+  for (const { type, value } of formatted) parts[type] = value
+
+  const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second)
+  return asUtc - ts
+}
+
+// First instant of a calendar month in `timeZone`. `month` is 1-based. The offset is
+// resolved twice because the naive guess can land on the wrong side of a DST shift.
+function localMonthStartTs (year, month, timeZone) {
+  const wallClock = Date.UTC(year, month - 1, 1)
+  const ts = wallClock - zoneOffsetMs(wallClock, timeZone)
+  const settled = zoneOffsetMs(ts, timeZone)
+
+  return settled === zoneOffsetMs(wallClock, timeZone) ? ts : wallClock - settled
+}
+
+function localMonthKey (ts, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit' })
+    .format(new Date(ts))
+  return parts.slice(0, 7)
+}
+
+/**
+ * Every calendar month in `timeZone` that [start, end] touches, chronologically, each
+ * with its own bounds. The store has no calendar-month bucket (groupRange '1M' is a
+ * rolling 30 days), so callers that need months build them from these.
+ */
+function localMonthsInRange (start, end, timeZone) {
+  const months = []
+  let [year, month] = localMonthKey(start, timeZone).split('-').map(Number)
+
+  for (;;) {
+    const monthStart = localMonthStartTs(year, month, timeZone)
+    if (monthStart > end) return months
+
+    const next = month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 }
+    months.push({
+      key: `${year}-${String(month).padStart(2, '0')}`,
+      start: monthStart,
+      end: localMonthStartTs(next.year, next.month, timeZone) - 1
+    })
+    ;({ year, month } = next)
+  }
+}
+
+function rollupLocalDays (log, timezone) {
+  return rollupLocalPeriods(log, new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit'
+  }))
+}
+
+// The backend has no calendar-month bucket (groupRange '1M' is a rolling 30 days),
+// so a site-local month is rebuilt from its hourly buckets the same way a local day is.
+function rollupLocalMonths (log, timezone) {
+  return rollupLocalPeriods(log, new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone, year: 'numeric', month: '2-digit'
+  }))
 }
 
 module.exports = {
@@ -304,7 +406,11 @@ module.exports = {
   resolveInterval,
   getIntervalConfig,
   rollupLocalDays,
+  rollupLocalMonths,
+  localMonthsInRange,
+  localMonthKey,
   poolPctOfNominal,
+  invoicePeriodPoolPctOfNominal,
   mhsToPhs,
   mhsToThs,
   parseRackId,

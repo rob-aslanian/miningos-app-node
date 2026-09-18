@@ -891,8 +891,13 @@ async function getRevenueSummary (ctx, req) {
 
     const powerW = dailyPower[dayTs] || 0
     const consumptionMWh = (powerW * 24) / 1000000
-    const hashrateMhs = dailyHashrate[dayTs] || 0
-    const hashratePhs = hashrateMhs / 1e9
+    // A day the hashrate series never reported is unknown, not zero. Zero-filling it here
+    // drags the caller's period average down — a window with a telemetry gap reads as if the
+    // site had been idle. `aggregateByPeriod` skips null for mean keys, and the monthly
+    // hashrate rollup already leaves unreported months absent rather than zero-filled
+    // (metrics.handlers.js), so null is the shape the rest of the stack expects.
+    const hashrateMhs = dayTs in dailyHashrate ? dailyHashrate[dayTs] : null
+    const hashratePhs = hashrateMhs === null ? null : hashrateMhs / 1e9
 
     const monthKey = getMonthKeyUtc(ts)
     const costs = costsByMonth[monthKey] || {}

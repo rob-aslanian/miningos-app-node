@@ -249,6 +249,7 @@ async function createWorkOrder(ctx, req) {
       },
     ];
     if (info.deviceStatus) {
+<<<<<<< HEAD
       const partResults = await submitWorkOrderAction(
         ctx,
         req,
@@ -257,6 +258,10 @@ async function createWorkOrder(ctx, req) {
         part.rack,
       );
       assertActionApplied(partResults, "ERR_PART_MOVE_PUSH_FAILED");
+=======
+      const partResults = await submitWorkOrderAction(ctx, req, 'updateThing', { id: part.id, info: { status: info.deviceStatus, workOrderId: woId } }, part.rack, { elevateRackWrite: true })
+      assertActionApplied(partResults, 'ERR_PART_MOVE_PUSH_FAILED')
+>>>>>>> e1196a492e348780ddc4fdd97bb092bea6c537a2
     }
   } else if (type === WORK_ORDER_TYPES.REGISTER) {
     const part = await _resolvePartByIdentifier(ctx, deviceIdentifier);
@@ -573,6 +578,7 @@ async function createWorkOrdersBatch(ctx, req) {
       fromStatus: minerToRepair.info?.status ?? null,
       toStatus: info.deviceStatus,
       ts,
+<<<<<<< HEAD
       user: voter,
     });
     const minerResults = await submitWorkOrderAction(
@@ -593,6 +599,19 @@ async function createWorkOrdersBatch(ctx, req) {
   await assertActionsExecuted(ctx, req, "ERR_WO_DEVICE_UPDATE_FAILED");
 
   return submitWorkOrderAction(ctx, req, "registerThing", { id: woId, info });
+=======
+      user: voter
+    })
+    const minerResults = await submitWorkOrderAction(ctx, req, 'updateThing', { id: minerToRepair.id, info: { status: info.deviceStatus, workOrderId: woId } }, minerToRepair.rack, { elevateRackWrite: true })
+    assertActionApplied(minerResults, 'ERR_PART_MOVE_PUSH_FAILED')
+  }
+
+  info.partsMoves = partsMoves
+
+  await assertActionsExecuted(ctx, req, 'ERR_WO_DEVICE_UPDATE_FAILED')
+
+  return submitWorkOrderAction(ctx, req, 'registerThing', { id: woId, info })
+>>>>>>> e1196a492e348780ddc4fdd97bb092bea6c537a2
 }
 
 async function updateWorkOrder(ctx, req) {

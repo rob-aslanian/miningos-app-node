@@ -132,7 +132,7 @@
         "ticket:rw",
         "work_order:rw",
         "alert_config:rw",
-        "alert_config_sensitive:r",
+        "alert_config_sensitive:rw",
         "pool_config:r"
       ],
       "site_operator": [
@@ -188,7 +188,8 @@
         "settings:r",
         "ticket:r",
         "alerts:r",
-        "work_order:rw"
+        "work_order:rw",
+        "users:r"
       ],
       "read_only_user": [
         "miner:r",
@@ -246,6 +247,15 @@
         "pool_manager",
         "admin_external",
         "admin"
+      ],
+      "repair_technician": [
+        "site_manager",
+        "site_operator",
+        "reporting_tool_manager",
+        "field_operator",
+        "repair_technician",
+        "read_only_user",
+        "pool_manager"
       ]
     }
   }

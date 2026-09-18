@@ -697,3 +697,47 @@ test('AuthLib - site_operator reads the forecast summary but not overview or set
   t.is(await authLib.tokenHasPerms('token', false, ['forecast_settings']), false, 'settings are not')
   t.is(await authLib.tokenHasPerms('token', true, ['forecast_settings']), false, 'settings are not writable')
 })
+
+// setAlertParams() downgrades a save to notes-only unless the caller holds
+// alert_config_sensitive:w, so site managers need the write level to configure
+// alert thresholds at all.
+test('AuthLib - site_manager may write alert thresholds', async (t) => {
+  const { a0 } = AUTH_CONFIG
+  const authLib = new AuthLib({
+    httpc: {},
+    httpd: {},
+    userService: {},
+    auth: {
+      getTokenPerms: () => ({ superadmin: false, perms: a0.roles.site_manager }),
+      conf: { superAdminPerms: a0.superAdminPerms }
+    }
+  })
+
+  t.is(await authLib.tokenHasPerms('token', false, ['alert_config:w']), true, 'notes are writable')
+  t.is(
+    await authLib.tokenHasPerms('token', false, ['alert_config_sensitive:w']),
+    true,
+    'threshold values are writable'
+  )
+})
+
+// Every other non-admin role stays notes-only; widening site_manager must not
+// have widened the roles below it.
+test('AuthLib - site_operator may not write alert thresholds', async (t) => {
+  const { a0 } = AUTH_CONFIG
+  const authLib = new AuthLib({
+    httpc: {},
+    httpd: {},
+    userService: {},
+    auth: {
+      getTokenPerms: () => ({ superadmin: false, perms: a0.roles.site_operator }),
+      conf: { superAdminPerms: a0.superAdminPerms }
+    }
+  })
+
+  t.is(
+    await authLib.tokenHasPerms('token', false, ['alert_config_sensitive:w']),
+    false,
+    'threshold values are not writable'
+  )
+})

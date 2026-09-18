@@ -292,13 +292,16 @@ test('calculateSummary - handles empty log', (t) => {
   t.pass()
 })
 
-function makeMockCtx (days) {
+// `statDays` defaults to `days`, i.e. every day the transactions cover also reported
+// telemetry. Pass a shorter list to model a gap in the stat log: a day the site was paid
+// for but never reported a hashrate sample.
+function makeMockCtx (days, statDays = days) {
   return withDataProxy({
     conf: { orks: [{ rpcPublicKey: 'key1' }] },
     net_r0: {
       jRequest: async (_key, method, payload) => {
         if (method === 'tailLog') {
-          return days.map(d => ({ ts: d.ts, site_power_w: d.powerW, hashrate_mhs_5m_sum_aggr: d.hashrateMhs || 0 }))
+          return statDays.map(d => ({ ts: d.ts, site_power_w: d.powerW, hashrate_mhs_5m_sum_aggr: d.hashrateMhs || 0 }))
         }
         if (method === 'getWrkExtData') {
           if (payload.query && payload.query.key === 'transactions') {
@@ -387,6 +390,44 @@ test('getRevenueSummary monthly - rates use MEAN, totals use SUM', async (t) => 
   t.is(m.btcPrice, 50000, 'btcPrice averaged')
   t.is(m.powerW, 4_000_000, 'powerW averaged')
   t.is(m.hashrateMhs, 200, 'hashrateMhs averaged')
+})
+
+test('getRevenueSummary daily - a day with no hashrate sample is null, not zero', async (t) => {
+  const day1 = Date.UTC(2024, 0, 15)
+  const day2 = Date.UTC(2024, 0, 16)
+  const days = [
+    { ts: day1, powerW: 5_000_000, hashrateMhs: 100, btc: 0.5, price: 40000 },
+    { ts: day2, powerW: 3_000_000, hashrateMhs: 300, btc: 0.3, price: 40000 }
+  ]
+
+  // day2 is paid for but never reported telemetry.
+  const result = await getRevenueSummary(makeMockCtx(days, [days[0]]), {
+    query: { start: day1 - 1000, end: day2 + 86400000, period: 'daily' }
+  }, {})
+
+  t.is(result.log.length, 2, 'the paid-for day still appears in the log')
+  t.is(result.log[0].hashrateMhs, 100, 'the reported day keeps its value')
+  t.is(result.log[1].hashrateMhs, null, 'the unreported day is null, not a zero-filled reading')
+  t.is(result.log[1].hashRevenueUSDPerPHsPerDay, null, 'per-PH/s revenue is unknown too, not Infinity or 0')
+})
+
+test('getRevenueSummary monthly - a missing hashrate day does not drag the mean down', async (t) => {
+  const day1 = Date.UTC(2024, 0, 15)
+  const day2 = Date.UTC(2024, 0, 16)
+  const day3 = Date.UTC(2024, 0, 17)
+  const days = [
+    { ts: day1, powerW: 5_000_000, hashrateMhs: 100, btc: 0.5, price: 40000 },
+    { ts: day2, powerW: 3_000_000, hashrateMhs: 300, btc: 0.3, price: 40000 },
+    { ts: day3, powerW: 4_000_000, hashrateMhs: 0, btc: 0.4, price: 40000 }
+  ]
+
+  // day3 has a transaction but no stat entry; zero-filling it would average (100+300+0)/3 = 133.33.
+  const result = await getRevenueSummary(makeMockCtx(days, days.slice(0, 2)), {
+    query: { start: day1 - 1000, end: day3 + 86400000, period: 'monthly' }
+  }, {})
+
+  t.is(result.log.length, 1, 'three days collapse to one monthly bucket')
+  t.is(result.log[0].hashrateMhs, 200, 'mean over the two days that reported: (100+300)/2')
 })
 
 test('getCostSummary - central DCS reads site power from the DCS worker', async (t) => {

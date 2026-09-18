@@ -12,6 +12,8 @@ const schemas = {
         start: { type: 'integer', minimum: 0 },
         end: { type: 'integer', minimum: 0 },
         interval: { type: 'string', enum: METRICS_INTERVALS },
+        // Only read by the '1M' rollup, which cuts months in this zone rather than UTC.
+        timezone: { type: 'string' },
         groupBy: { type: 'string', enum: ['miner', 'container', 'rack'] },
         container: { type: 'string' },
         current: { type: 'boolean' },

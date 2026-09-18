@@ -12,7 +12,7 @@ const MHS = 1e11
 const NOMINAL_MHS = 1.25e11
 const POOL_HS = 9.9e16 // 99 PH/s, pool stats are in H/s
 
-function mockCtx ({ buckets = 3, interval = HOUR_MS, globalData = {}, hashrateMhs = MHS, poolHashrateHs = POOL_HS } = {}) {
+function mockCtx ({ buckets = 3, interval = HOUR_MS, globalData = {}, hashrateMhs = MHS, poolHashrateHs = POOL_HS, poolBuckets = null } = {}) {
   return withDataProxy({
     conf: { orks: [{ rpcPublicKey: 'key1' }] },
     globalDataLib: { getGlobalData: async ({ type }) => globalData[type] },
@@ -22,7 +22,7 @@ function mockCtx ({ buckets = 3, interval = HOUR_MS, globalData = {}, hashrateMh
           return [{
             hashrateHistory: poolHashrateHs === null
               ? []
-              : Array.from({ length: buckets }, (_, i) => ({
+              : Array.from({ length: poolBuckets ?? buckets }, (_, i) => ({
                 poolType: 'f2pool',
                 ts: START + i * interval + 1000,
                 username: 'account-a',
@@ -51,7 +51,7 @@ async function runExport (type, params, ctxOpts) {
 }
 
 test('invoicing exports are registered as reporting exports', async (t) => {
-  for (const type of ['invoicing-hourly-hashes', 'invoicing-daily-hashes', 'invoice-breakdown']) {
+  for (const type of ['invoicing-hourly-hashes', 'invoicing-daily-hashes', 'invoicing-monthly-hashes', 'invoice-breakdown']) {
     t.ok(EXPORT_TYPES.includes(type), `${type} is an accepted export type`)
     t.alike(getExportType(type).perms, ['reporting:r'], `${type} is gated on reporting`)
   }
@@ -69,14 +69,14 @@ test('invoicing exports require a valid range', async (t) => {
   t.pass()
 })
 
-test('invoicing exports round every figure to three decimals', async (t) => {
+test('invoicing exports round % of nominal to two decimals and every other figure to three', async (t) => {
   const { out } = await runExport(
     'invoicing-hourly-hashes',
     { start: START, end: START + HOUR_MS, timezone: 'UTC', format: 'csv' },
-    { buckets: 1, hashrateMhs: 123456789012.3 }
+    { buckets: 1, hashrateMhs: 123456789012.3, poolHashrateHs: 9.87654e16 }
   )
 
-  t.is(out.split('\n')[1], '"01/08/2026","00:00","356.4","79.2","123.457","99"', 'matches the precision the UI exports')
+  t.is(out.split('\n')[1], '"01/08/2026","00:00","355.555","79.01","123.457","98.765"')
   t.pass()
 })
 
@@ -141,6 +141,50 @@ test('invoicing-daily-hashes - a day the pool never reported delivers null, not 
   t.pass()
 })
 
+test('invoicing-monthly-hashes - one row per UTC month when the export is asked for UTC', async (t) => {
+  const { filename, out } = await runExport(
+    'invoicing-monthly-hashes',
+    { start: START, end: START + 2 * DAY_MS, timezone: 'UTC', format: 'csv' },
+    { buckets: 48, interval: HOUR_MS }
+  )
+  const lines = out.split('\n')
+
+  t.ok(filename.startsWith('invoicing_monthly_hashes_'), 'filename names the export')
+  t.is(lines[0], 'year,month,hashesDeliveredEh,pctOfNominal,avgMinerHashratePhs,avgPoolHashratePhs')
+  t.is(lines[1], '"2026","August","17107.2","79.2","100","99"', 'pool 9.9e10 MH/s x 48 x 3600 / 1e12 = 17107.2 EH')
+  t.is(lines.length, 2, 'header plus the single month the range covers')
+  t.pass()
+})
+
+test('invoicing-monthly-hashes - hourly buckets roll up into the requested timezone months', async (t) => {
+  const { out } = await runExport(
+    'invoicing-monthly-hashes',
+    { start: START, end: START + 2 * DAY_MS, timezone: 'Etc/GMT+3', format: 'csv' },
+    { buckets: 48, interval: HOUR_MS }
+  )
+  const lines = out.split('\n')
+
+  t.is(lines[1], '"2026","July","1069.2","79.2","100","99"', 'the 3 hours before Aug 1 00:00 UTC are still July locally')
+  t.is(lines[2], '"2026","August","16038","79.2","100","99"', 'the remaining 45 hours land in August')
+  t.is(lines.length, 3, 'a range opening on a UTC month boundary spans 2 local months')
+  t.pass()
+})
+
+test('invoicing-monthly-hashes - a month the pool never reported delivers null, not zero', async (t) => {
+  const { out } = await runExport(
+    'invoicing-monthly-hashes',
+    { start: START, end: START + DAY_MS, timezone: 'UTC', format: 'json' },
+    { buckets: 24, interval: HOUR_MS, poolHashrateHs: null }
+  )
+  const row = JSON.parse(out).hashes[0]
+
+  t.is(row.hashesDeliveredEh, null, 'no pool samples is missing data, not lost hashes')
+  t.is(row.avgPoolHashratePhs, null)
+  t.is(row.avgMinerHashratePhs, 100, 'miner telemetry still reports')
+  t.is(row.pctOfNominal, null, 'no pool samples means no delivered share either')
+  t.pass()
+})
+
 test('invoice-breakdown - one row, margin applied over energy, ops and payable amortization', async (t) => {
   const { out } = await runExport(
     'invoice-breakdown',
@@ -171,6 +215,50 @@ test('invoice-breakdown - one row, margin applied over energy, ops and payable a
   t.is(row.amortizationPayableUsd, 118800, '79.2% of the amortization is payable')
   t.is(row.marginUsd, 14780, '10% of energy + ops + payable amortization')
   t.is(row.monthlyInvoiceUsd, 162580)
+  t.pass()
+})
+
+test('invoice-breakdown - hours without pool data count as zero delivered, not dropped', async (t) => {
+  // 4 hourly buckets, pool samples only in the first 2: the invoice bills the whole
+  // period, so the share halves instead of staying at the covered-hours 79.2%.
+  const { out } = await runExport(
+    'invoice-breakdown',
+    { start: START, end: START + 4 * HOUR_MS, timezone: 'UTC', format: 'json' },
+    {
+      buckets: 4,
+      interval: HOUR_MS,
+      poolBuckets: 2,
+      globalData: {
+        costParameters: { minerAmortizationUsd: 100000, infraAmortizationUsd: 50000 },
+        productionCosts: []
+      }
+    }
+  )
+  const row = JSON.parse(out).breakdown[0]
+
+  t.is(row.pctOfNominal, 39.6, 'half the coverage-basis 79.2%: 2 of 4 nominal hours delivered')
+  t.is(row.amortizationPayableUsd, 59400, '39.6% of the amortization is payable')
+  t.pass()
+})
+
+test('invoice-breakdown - a month the pool never reported has a null share, not zero', async (t) => {
+  const { out } = await runExport(
+    'invoice-breakdown',
+    { start: START, end: START + 2 * DAY_MS, timezone: 'UTC', format: 'json' },
+    {
+      buckets: 2,
+      interval: DAY_MS,
+      poolHashrateHs: null,
+      globalData: {
+        costParameters: { minerAmortizationUsd: 100000, infraAmortizationUsd: 50000 },
+        productionCosts: []
+      }
+    }
+  )
+  const row = JSON.parse(out).breakdown[0]
+
+  t.is(row.pctOfNominal, null, 'a missing pool feed is not zero production')
+  t.is(row.amortizationPayableUsd, null, 'payable amortization cannot be derived without a share')
   t.pass()
 })
 
