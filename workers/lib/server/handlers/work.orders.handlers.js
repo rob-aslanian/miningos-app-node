@@ -150,20 +150,11 @@ async function _moveAttachedParts(
 
   const moves = [];
   for (const part of parts) {
-    const partResults = await submitWorkOrderAction(
-      ctx,
-      req,
-      "updateThing",
-      {
-        id: part.id,
-        info: { location: toLocation, workOrderId: woId },
-      },
-      part.rack,
-    );
-    assertActionApplied(
-      partResults,
-      `ERR_ATTACHED_PART_MOVE_PUSH_FAILED:${part.id}`,
-    );
+    const partResults = await submitWorkOrderAction(ctx, req, 'updateThing', {
+      id: part.id,
+      info: { location: toLocation, workOrderId: woId }
+    }, part.rack, { elevateRackWrite: part.type })
+    assertActionApplied(partResults, `ERR_ATTACHED_PART_MOVE_PUSH_FAILED:${part.id}`)
     moves.push({
       partId: part.id,
       partCode: part.code,
@@ -249,7 +240,7 @@ async function createWorkOrder(ctx, req) {
       },
     ];
     if (info.deviceStatus) {
-      const partResults = await submitWorkOrderAction(ctx, req, 'updateThing', { id: part.id, info: { status: info.deviceStatus, workOrderId: woId } }, part.rack, { elevateRackWrite: true })
+      const partResults = await submitWorkOrderAction(ctx, req, 'updateThing', { id: part.id, info: { status: info.deviceStatus, workOrderId: woId } }, part.rack, { elevateRackWrite: part.type })
       assertActionApplied(partResults, 'ERR_PART_MOVE_PUSH_FAILED')
     }
   } else if (type === WORK_ORDER_TYPES.REGISTER) {
@@ -319,46 +310,27 @@ async function createWorkOrder(ctx, req) {
     // Move WOs auto-close, so the relocation has to happen here or it never will.
     // The part rack rejects a location change that omits workOrderId (ERR_PART_MOVE_REQUIRES_WO).
     if (info.location != null) {
-      const partResults = await submitWorkOrderAction(
-        ctx,
-        req,
-        "updateThing",
-        {
-          id: part.id,
-          info: {
-            location: info.location,
-            workOrderId: woId,
-            ...(info.deviceStatus ? { status: info.deviceStatus } : {}),
-            ...placement,
-          },
-        },
-        part.rack,
-      );
-      assertActionApplied(partResults, "ERR_PART_MOVE_PUSH_FAILED");
-      info.partsMoves.push(
-        ...(await _moveAttachedParts(ctx, req, {
-          miner: part,
-          deviceType,
-          toLocation: info.location,
-          woId,
-          voter,
-          ts,
-        })),
-      );
+      const partResults = await submitWorkOrderAction(ctx, req, 'updateThing', {
+        id: part.id,
+        info: {
+          location: info.location,
+          workOrderId: woId,
+          ...(info.deviceStatus ? { status: info.deviceStatus } : {}),
+          ...placement
+        }
+      }, part.rack, { elevateRackWrite: part.type })
+      assertActionApplied(partResults, 'ERR_PART_MOVE_PUSH_FAILED')
+      info.partsMoves.push(...await _moveAttachedParts(ctx, req, {
+        miner: part, deviceType, toLocation: info.location, woId, voter, ts
+      }))
     }
     if (replacement) {
-      info.partsMoves.push(_buildReplacementMove(replacement, part, voter, ts));
-      const replacementResults = await submitWorkOrderAction(
-        ctx,
-        req,
-        "updateThing",
-        {
-          id: replacement.thing.id,
-          info: _replacementInfo(replacement, woId),
-        },
-        replacement.thing.rack,
-      );
-      assertActionApplied(replacementResults, "ERR_WO_REPLACEMENT_PUSH_FAILED");
+      info.partsMoves.push(_buildReplacementMove(replacement, part, voter, ts))
+      const replacementResults = await submitWorkOrderAction(ctx, req, 'updateThing', {
+        id: replacement.thing.id,
+        info: _replacementInfo(replacement, woId)
+      }, replacement.thing.rack, { elevateRackWrite: replacement.thing.type })
+      assertActionApplied(replacementResults, 'ERR_WO_REPLACEMENT_PUSH_FAILED')
     }
   }
 
@@ -514,46 +486,27 @@ async function createWorkOrdersBatch(ctx, req) {
     // Move WOs auto-close, so relocate each part here or it never happens.
     // The part rack rejects a location change that omits workOrderId (ERR_PART_MOVE_REQUIRES_WO).
     if (type === WORK_ORDER_TYPES.MOVE && info.location != null) {
-      const partResults = await submitWorkOrderAction(
-        ctx,
-        req,
-        "updateThing",
-        {
-          id: part.id,
-          info: {
-            location: info.location,
-            workOrderId: woId,
-            ...(info.deviceStatus ? { status: info.deviceStatus } : {}),
-            ...placement,
-          },
-        },
-        part.rack,
-      );
-      assertActionApplied(partResults, "ERR_PART_MOVE_PUSH_FAILED");
-      partsMoves.push(
-        ...(await _moveAttachedParts(ctx, req, {
-          miner: part,
-          deviceType: device.deviceType,
-          toLocation: info.location,
-          woId,
-          voter,
-          ts,
-        })),
-      );
+      const partResults = await submitWorkOrderAction(ctx, req, 'updateThing', {
+        id: part.id,
+        info: {
+          location: info.location,
+          workOrderId: woId,
+          ...(info.deviceStatus ? { status: info.deviceStatus } : {}),
+          ...placement
+        }
+      }, part.rack, { elevateRackWrite: part.type })
+      assertActionApplied(partResults, 'ERR_PART_MOVE_PUSH_FAILED')
+      partsMoves.push(...await _moveAttachedParts(ctx, req, {
+        miner: part, deviceType: device.deviceType, toLocation: info.location, woId, voter, ts
+      }))
     }
     if (replacement) {
-      partsMoves.push(_buildReplacementMove(replacement, part, voter, ts));
-      const replacementResults = await submitWorkOrderAction(
-        ctx,
-        req,
-        "updateThing",
-        {
-          id: replacement.thing.id,
-          info: _replacementInfo(replacement, woId),
-        },
-        replacement.thing.rack,
-      );
-      assertActionApplied(replacementResults, "ERR_WO_REPLACEMENT_PUSH_FAILED");
+      partsMoves.push(_buildReplacementMove(replacement, part, voter, ts))
+      const replacementResults = await submitWorkOrderAction(ctx, req, 'updateThing', {
+        id: replacement.thing.id,
+        info: _replacementInfo(replacement, woId)
+      }, replacement.thing.rack, { elevateRackWrite: replacement.thing.type })
+      assertActionApplied(replacementResults, 'ERR_WO_REPLACEMENT_PUSH_FAILED')
     }
   }
 
@@ -569,7 +522,7 @@ async function createWorkOrdersBatch(ctx, req) {
       ts,
       user: voter
     })
-    const minerResults = await submitWorkOrderAction(ctx, req, 'updateThing', { id: minerToRepair.id, info: { status: info.deviceStatus, workOrderId: woId } }, minerToRepair.rack, { elevateRackWrite: true })
+    const minerResults = await submitWorkOrderAction(ctx, req, 'updateThing', { id: minerToRepair.id, info: { status: info.deviceStatus, workOrderId: woId } }, minerToRepair.rack, { elevateRackWrite: minerToRepair.type })
     assertActionApplied(minerResults, 'ERR_PART_MOVE_PUSH_FAILED')
   }
 
@@ -580,12 +533,71 @@ async function createWorkOrdersBatch(ctx, req) {
   return submitWorkOrderAction(ctx, req, 'registerThing', { id: woId, info })
 }
 
-async function updateWorkOrder(ctx, req) {
-  const { info: extraInfo, ...body } = req.body;
-  return submitWorkOrderAction(ctx, req, "updateThing", {
-    id: req.params.id,
-    info: { ...body, ...extraInfo },
-  });
+function _formatMacAddress (mac) {
+  if (!mac) return null
+  const raw = String(mac).trim().toUpperCase()
+  const hex = raw.replace(/[:-]/g, '')
+  if (/^[0-9A-F]{12}$/.test(hex)) return hex.match(/.{2}/g).join(':')
+  return raw
+}
+
+async function _appendWorkOrderNote (ctx, req, woId, text) {
+  const rackId = await getWorkOrderRackId(ctx)
+  await ctx.dataProxy.requestData('saveThingComment', {
+    rackId,
+    thingId: woId,
+    comment: text,
+    user: req._info.user.metadata.email,
+    kind: WORK_ORDER_NOTE_KIND
+  }, (res, arr) => { arr.push(res) })
+}
+
+// A miner's MAC address belongs to its control board, so a WO that records a
+// controller replacement must carry the new board's MAC onto the miner record —
+// otherwise Inventory keeps reporting the removed board's MAC.
+async function _syncMinerMacAddress (ctx, req, woId, partsMoves) {
+  if (!Array.isArray(partsMoves)) return
+  const replacement = partsMoves
+    .filter(m => m?.role === 'replacement' && m.deviceType === 'controller' && m.partId)
+    .pop()
+  if (!replacement) return
+
+  const wo = await _loadWorkOrderByIdOrCode(ctx, woId)
+  if (!wo?.info?.minerIdentifier) return
+
+  const miner = await _resolvePartByIdentifier(ctx, wo.info.minerIdentifier)
+  if (!miner || !_isMiner(miner)) return
+
+  const part = await _resolvePartByIdentifier(ctx, replacement.partId)
+  if (!part || part.info?.parentDeviceId !== miner.id) return
+
+  const macAddress = _formatMacAddress(part.info?.macAddress)
+  if (!macAddress || macAddress === _formatMacAddress(miner.info?.macAddress)) return
+
+  // The rack can legitimately refuse the write — e.g. another miner still
+  // holds this MAC from the board's previous life — and that must not block
+  // the WO from saving, so the failure becomes a note on the WO instead.
+  try {
+    const results = await submitWorkOrderAction(ctx, req, 'updateThing', {
+      id: miner.id,
+      info: { macAddress, workOrderId: wo.id }
+    }, miner.rack, { elevateRackWrite: miner.type })
+    assertActionApplied(results, 'ERR_WO_MINER_MAC_SYNC_FAILED')
+    const ids = results.map(r => r?.id).filter(Boolean)
+    await assertActionsExecuted(ctx, req, 'ERR_WO_MINER_MAC_SYNC_FAILED', ids)
+  } catch (err) {
+    await _appendWorkOrderNote(ctx, req, wo.id,
+      `Miner ${miner.code || miner.id} MAC address was not updated to ${macAddress}: ${err.message}`)
+  }
+}
+
+async function updateWorkOrder (ctx, req) {
+  const { info: extraInfo, ...body } = req.body
+  const info = { ...body, ...extraInfo }
+  const results = await submitWorkOrderAction(ctx, req, 'updateThing', { id: req.params.id, info })
+  const failed = (results || []).some(r => r?.errors?.length)
+  if (!failed) await _syncMinerMacAddress(ctx, req, req.params.id, info.partsMoves)
+  return results
 }
 
 async function closeWorkOrder(ctx, req) {
