@@ -223,4 +223,4 @@ const invoiceBreakdown = {
   }
 }
 
-module.exports = { invoicingHourlyHashes, invoicingDailyHashes, invoicingMonthlyHashes, invoiceBreakdown }
+module.exports = { invoicingHourlyHashes, invoicingDailyHashes, invoicingMonthlyHashes, invoiceBreakdown, assertRange }

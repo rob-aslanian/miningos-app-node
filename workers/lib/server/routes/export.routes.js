@@ -19,7 +19,9 @@ module.exports = (ctx) => [
           statKey: { type: 'string', enum: ['stat-1m', 'stat-5m', 'stat-3h'] },
           start: { type: 'integer', minimum: 0 },
           end: { type: 'integer', minimum: 0 },
-          timezone: { type: 'string', maxLength: 100 }
+          timezone: { type: 'string', maxLength: 100 },
+          valuation: { type: 'string', enum: ['receipt', 'report'] },
+          bucket: { type: 'string', enum: ['monthly', 'quarterly', 'yearly'] }
         },
         required: ['type']
       }

@@ -1654,6 +1654,7 @@ module.exports = {
   processPriceData,
   processEnergyData,
   extractNominalPower,
+  extractForecastSettings,
   processCostsData,
   calculateSummary,
   processEbitdaPrices,
