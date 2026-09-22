@@ -10,6 +10,7 @@ const {
   getPoolThingConfig,
   getPoolStatsContainers
 } = require('../handlers/pools.handlers')
+const { withLocalizedLog } = require('../../metrics.utils')
 const { createCachedAuthRoute, createAuthRoute } = require('../lib/routeHelpers')
 
 module.exports = (ctx) => {
@@ -47,10 +48,11 @@ module.exports = (ctx) => {
           req.params.pool,
           req.query.start,
           req.query.end,
-          req.query.range
+          req.query.range,
+          req.query.timezone
         ],
         ENDPOINTS.POOLS_BALANCE_HISTORY,
-        getPoolBalanceHistory
+        withLocalizedLog(getPoolBalanceHistory)
       )
     },
     {

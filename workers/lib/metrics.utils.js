@@ -1,7 +1,7 @@
 'use strict'
 
 const { getStartOfDay } = require('./period.utils')
-const { METRICS_TIME, LOG_KEYS } = require('./constants')
+const { METRICS_TIME, LOG_KEYS, LOCKED_TIMEZONE_DEFAULT } = require('./constants')
 
 /**
  * Parse timestamp from RPC entry.
@@ -41,6 +41,108 @@ function validateStartEnd (req) {
   }
 
   return { start, end }
+}
+
+function assertTimezone (timezone) {
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone: timezone })
+    return timezone
+  } catch (err) {
+    throw new Error('ERR_INVALID_TIMEZONE')
+  }
+}
+
+// Always resolves to a real zone: the request's own `timezone`, else the site's
+// featureConfig.lockedTimezone, else the constants default. Used unconditionally for
+// output display (withLocalizedLog) and for local day/month bucketing - only whether
+// start/end themselves get reinterpreted as wall-clock time is gated separately (see
+// resolveStartEnd), since a resolved lockedTimezone/default must not silently reshape
+// a caller's own UTC values when they never opted in with an explicit `timezone`.
+function resolveTimezone (ctx, req) {
+  const timezone = req.query.timezone || ctx.conf?.featureConfig?.lockedTimezone || LOCKED_TIMEZONE_DEFAULT
+  return assertTimezone(timezone)
+}
+
+// `ms` arrives as the wall-clock time in `timeZone` (expressed as if it were UTC ms)
+// and is shifted here to the real UTC instant it represents.
+function convertLocalToUtcMs (ms, timeZone) {
+  if (!timeZone || timeZone === 'UTC') return ms
+  return ms - zoneOffsetMs(ms, timeZone)
+}
+
+// validateStartEnd plus the timezone conversion described above - but only when the
+// caller explicitly sent `timezone`. A zone resolved from lockedTimezone/the constants
+// default is still returned (callers use it for bucketing and for withLocalizedLog's
+// output conversion), but it never reinterprets start/end on its own: those only shift
+// when the request itself opted in.
+function resolveStartEnd (ctx, req) {
+  const { start, end } = validateStartEnd(req)
+  const timezone = resolveTimezone(ctx, req)
+  const hasExplicitTimezone = Boolean(req.query.timezone)
+
+  return {
+    start: hasExplicitTimezone ? convertLocalToUtcMs(start, timezone) : start,
+    end: hasExplicitTimezone ? convertLocalToUtcMs(end, timezone) : end,
+    timezone
+  }
+}
+
+// For an optional start/end with a computed fallback (already a true UTC instant): an
+// explicitly-supplied value is only reinterpreted as local wall-clock time when the
+// caller also sent `timezone` explicitly - mirrors resolveStartEnd's gating for the
+// required start/end case, for the routes where start/end are optional instead.
+function resolveOptionalTimeMs (req, timezone, rawValue, defaultMs) {
+  if (rawValue === undefined) return defaultMs
+  const ms = Number(rawValue)
+  return req.query.timezone ? convertLocalToUtcMs(ms, timezone) : ms
+}
+
+// Reverse of convertLocalToUtcMs: shifts a true UTC instant to the ms value that
+// carries the same wall-clock digits as `timeZone`'s local time, so a caller that
+// renders the timestamp with no further timezone math sees local time.
+function convertUtcToLocalMs (ms, timeZone) {
+  if (!timeZone || timeZone === 'UTC' || !Number.isFinite(ms)) return ms
+  return ms + zoneOffsetMs(ms, timeZone)
+}
+
+// Output-side mirror of resolveStartEnd's input conversion: shifts every entry's
+// `ts` (and `timeRange.startTs`/`endTs`, when present) from the true UTC instant
+// the store holds to the local-wall-clock-as-ms form described above.
+function localizeLogTimestamps (log, timeZone) {
+  if (!Array.isArray(log) || !timeZone || timeZone === 'UTC') return log
+
+  return log.map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry
+    const out = { ...entry }
+    if (typeof out.ts === 'number') out.ts = convertUtcToLocalMs(out.ts, timeZone)
+    if (out.timeRange && typeof out.timeRange === 'object') {
+      out.timeRange = {
+        ...out.timeRange,
+        startTs: convertUtcToLocalMs(out.timeRange.startTs, timeZone),
+        endTs: convertUtcToLocalMs(out.timeRange.endTs, timeZone)
+      }
+    }
+    return out
+  })
+}
+
+// Wraps a routed (ctx, req, rep) handler so a response `log` array has its
+// timestamps localized - same gating as resolveStartEnd's input conversion: only
+// when the caller explicitly sent `timezone`. A zone resolved from lockedTimezone or
+// the constants default is still used once that gate is open (and always feeds
+// internal day/month bucketing regardless), but it must not silently reshape a
+// response the caller never asked to see in local time.
+// `mapLog` defaults to the `ts`/`timeRange` shape most log entries use; pass a
+// custom one for a response whose entries carry timestamps differently.
+function withLocalizedLog (handler, mapLog = localizeLogTimestamps) {
+  return async (ctx, req, rep) => {
+    const result = await handler(ctx, req, rep)
+    if (!result || !Array.isArray(result.log)) return result
+    const hasExplicitTimezone = Boolean(req.query.timezone)
+    if (!hasExplicitTimezone) return result
+    const timezone = resolveTimezone(ctx, req)
+    return { ...result, log: mapLog(result.log, timezone) }
+  }
 }
 
 function * iterateRpcEntries (results) {
@@ -398,6 +500,14 @@ module.exports = {
   parseEntryTs,
   parseEntryTimeRange,
   validateStartEnd,
+  assertTimezone,
+  resolveTimezone,
+  convertLocalToUtcMs,
+  resolveStartEnd,
+  resolveOptionalTimeMs,
+  convertUtcToLocalMs,
+  localizeLogTimestamps,
+  withLocalizedLog,
   iterateRpcEntries,
   forEachRangeAggrItem,
   sumObjectValues,
@@ -405,9 +515,11 @@ module.exports = {
   extractKeyEntry,
   resolveInterval,
   getIntervalConfig,
+  zoneOffsetMs,
   rollupLocalDays,
   rollupLocalMonths,
   localMonthsInRange,
+  localMonthStartTs,
   localMonthKey,
   poolPctOfNominal,
   invoicePeriodPoolPctOfNominal,

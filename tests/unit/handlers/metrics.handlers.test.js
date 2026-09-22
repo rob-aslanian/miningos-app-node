@@ -32,6 +32,7 @@ const {
   getPowerModeTimeline,
   processPowerModeTimelineData,
   resolvePowerModeTimelineInterval,
+  localizePowerModeTimelineLog,
   getTemperature,
   processTemperatureData,
   calculateTemperatureSummary,
@@ -52,6 +53,7 @@ const {
   calculateDowntimeSummary
 } = require('../../../workers/lib/server/handlers/metrics.handlers')
 const { withDataProxy } = require('../helpers/mockHelpers')
+const { METRICS_TIME } = require('../../../workers/lib/constants')
 
 // ==================== Hashrate Tests ====================
 
@@ -611,6 +613,55 @@ test('getConsumption - happy path', async (t) => {
   t.is(result.log[0].consumptionMWh, (5000000 * 1) / 1000000, 'should convert to MWh over the bucket span')
   t.ok(result.summary.avgPowerW !== null, 'should have avg power')
   t.ok(result.summary.totalConsumptionMWh > 0, 'should have total consumption')
+  t.pass()
+})
+
+test('getConsumption - timezone param converts start/end before querying', async (t) => {
+  let capturedPayload
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        capturedPayload = payload
+        return [{ ts: 1700006400000, site_power_w: 5000000 }]
+      }
+    }
+  })
+
+  const localStart = Date.UTC(2026, 5, 1, 0, 0, 0)
+  const localEnd = Date.UTC(2026, 5, 2, 0, 0, 0)
+
+  await getConsumption(mockCtx, {
+    query: { start: localStart, end: localEnd, timezone: 'America/Campo_Grande' }
+  })
+
+  // America/Campo_Grande is UTC-4 with no DST, so local midnight is 04:00 UTC.
+  t.is(capturedPayload.start, localStart + 4 * 3600000, 'should shift start to real UTC')
+  t.is(capturedPayload.end, localEnd + 4 * 3600000, 'should shift end to real UTC')
+  t.pass()
+})
+
+test('getConsumption - timezone conversion propagates to the grouped delegation path', async (t) => {
+  let capturedPayload
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        capturedPayload = payload
+        return [{ ts: 1700006400000, power_w_type_group_sum_aggr: { 'S19-Pro': 1000 } }]
+      }
+    }
+  })
+
+  const localStart = Date.UTC(2026, 5, 1, 0, 0, 0)
+  const localEnd = Date.UTC(2026, 5, 2, 0, 0, 0)
+
+  await getConsumption(mockCtx, {
+    query: { start: localStart, end: localEnd, timezone: 'America/Campo_Grande', groupBy: 'miner' }
+  })
+
+  t.is(capturedPayload.start, localStart + 4 * 3600000, 'grouped RPC call should see the converted start')
+  t.is(capturedPayload.end, localEnd + 4 * 3600000, 'grouped RPC call should see the converted end')
   t.pass()
 })
 
@@ -1438,6 +1489,30 @@ test('getEfficiency - happy path', async (t) => {
   t.pass()
 })
 
+test('getEfficiency - timezone param converts start/end before querying', async (t) => {
+  let capturedPayload
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        capturedPayload = payload
+        return [{ ts: 1700006400000, efficiency_w_ths_avg_aggr: 25.5 }]
+      }
+    }
+  })
+
+  const localStart = Date.UTC(2026, 5, 1, 0, 0, 0)
+  const localEnd = Date.UTC(2026, 5, 2, 0, 0, 0)
+
+  await getEfficiency(mockCtx, {
+    query: { start: localStart, end: localEnd, timezone: 'America/Campo_Grande' }
+  })
+
+  t.is(capturedPayload.start, localStart + 4 * 3600000, 'should shift start to real UTC')
+  t.is(capturedPayload.end, localEnd + 4 * 3600000, 'should shift end to real UTC')
+  t.pass()
+})
+
 test('getEfficiency - central DCS derives efficiency from DCS site power over miner hashrate', async (t) => {
   const dayTs = 1700006400000
   const payloads = []
@@ -1858,6 +1933,30 @@ test('getMinerStatus - happy path', async (t) => {
   t.is(result.log[0].sleep, 10, 'should sum sleep counts')
   t.is(result.log[0].maintenance, 2, 'should sum maintenance counts')
   t.is(result.log[0].online, 80, 'should derive online (100-8-10-2)')
+  t.pass()
+})
+
+test('getMinerStatus - timezone param converts start/end before querying', async (t) => {
+  let capturedPayload
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        capturedPayload = payload
+        return [{ ts: 1700006400000, type_cnt: { 'miner-am-s19xp': 100 } }]
+      }
+    }
+  })
+
+  const localStart = Date.UTC(2026, 5, 1, 0, 0, 0)
+  const localEnd = Date.UTC(2026, 5, 2, 0, 0, 0)
+
+  await getMinerStatus(mockCtx, {
+    query: { start: localStart, end: localEnd, timezone: 'America/Campo_Grande' }
+  })
+
+  t.is(capturedPayload.start, localStart + 4 * 3600000, 'should shift start to real UTC')
+  t.is(capturedPayload.end, localEnd + 4 * 3600000, 'should shift end to real UTC')
   t.pass()
 })
 
@@ -2445,6 +2544,30 @@ test('getPowerMode - happy path', async (t) => {
   t.pass()
 })
 
+test('getPowerMode - timezone param converts start/end before querying', async (t) => {
+  let capturedPayload
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        capturedPayload = payload
+        return [{ ts: 1700006400000, power_mode_group_aggr: {}, status_group_aggr: {} }]
+      }
+    }
+  })
+
+  const localStart = Date.UTC(2026, 5, 1, 0, 0, 0)
+  const localEnd = Date.UTC(2026, 5, 2, 0, 0, 0)
+
+  await getPowerMode(mockCtx, {
+    query: { start: localStart, end: localEnd, timezone: 'America/Campo_Grande' }
+  })
+
+  t.is(capturedPayload.start, localStart + 4 * 3600000, 'should shift start to real UTC')
+  t.is(capturedPayload.end, localEnd + 4 * 3600000, 'should shift end to real UTC')
+  t.pass()
+})
+
 test('getPowerMode - missing start/end throws', async (t) => {
   const mockCtx = withDataProxy({
     conf: { orks: [] },
@@ -2631,6 +2754,25 @@ test('getPowerModeTimeline - happy path', async (t) => {
   t.pass()
 })
 
+test('localizePowerModeTimelineLog - shifts segments[].from/to to local wall-clock', (t) => {
+  const utcFrom = Date.UTC(2026, 5, 1, 4, 0, 0)
+  const utcTo = Date.UTC(2026, 5, 1, 8, 0, 0)
+  const log = [{ minerId: 'm1', container: 'c1', segments: [{ from: utcFrom, to: utcTo, powerMode: 'normal', status: 'mining' }] }]
+
+  const localized = localizePowerModeTimelineLog(log, 'America/Campo_Grande')
+  t.is(localized[0].segments[0].from, Date.UTC(2026, 5, 1, 0, 0, 0), 'from shifted -4h')
+  t.is(localized[0].segments[0].to, Date.UTC(2026, 5, 1, 4, 0, 0), 'to shifted -4h')
+  t.is(localized[0].segments[0].powerMode, 'normal', 'other segment fields preserved')
+  t.is(log[0].segments[0].from, utcFrom, 'input log left untouched')
+  t.pass()
+})
+
+test('localizePowerModeTimelineLog - UTC is a no-op', (t) => {
+  const log = [{ minerId: 'm1', segments: [{ from: 1, to: 2 }] }]
+  t.is(localizePowerModeTimelineLog(log, 'UTC'), log)
+  t.pass()
+})
+
 test('getPowerModeTimeline - default start/end', async (t) => {
   const mockCtx = withDataProxy({
     conf: { orks: [{ rpcPublicKey: 'key1' }] },
@@ -2640,6 +2782,52 @@ test('getPowerModeTimeline - default start/end', async (t) => {
   const result = await getPowerModeTimeline(mockCtx, { query: {} })
   t.ok(result.log, 'should return log with defaults')
   t.ok(Array.isArray(result.log), 'should be array')
+  t.pass()
+})
+
+test('getPowerModeTimeline - timezone param converts an explicit start/end', async (t) => {
+  let capturedPayload
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        capturedPayload = payload
+        return []
+      }
+    }
+  })
+
+  const localStart = Date.UTC(2026, 5, 1, 0, 0, 0)
+  const localEnd = Date.UTC(2026, 5, 1, 1, 0, 0)
+
+  await getPowerModeTimeline(mockCtx, {
+    query: { start: localStart, end: localEnd, timezone: 'America/Campo_Grande' }
+  })
+
+  t.is(capturedPayload.start, localStart + 4 * 3600000, 'should shift the explicit start to real UTC')
+  t.pass()
+})
+
+test('getPowerModeTimeline - timezone param does not shift the computed default range', async (t) => {
+  const before = Date.now()
+  let firstPayload
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        if (!firstPayload) firstPayload = payload
+        return []
+      }
+    }
+  })
+
+  await getPowerModeTimeline(mockCtx, { query: { timezone: 'America/Campo_Grande' } })
+  const after = Date.now()
+
+  // The default window is "now - 1 month"; a timezone offset (America/Campo_Grande
+  // is UTC-4) must not leak into it the way it does for an explicit start/end.
+  t.ok(firstPayload.start >= before - METRICS_TIME.ONE_MONTH_MS - 1000, 'default start should not be shifted earlier by the zone offset')
+  t.ok(firstPayload.start <= after - METRICS_TIME.ONE_MONTH_MS + 1000, 'default start should not be shifted later by the zone offset')
   t.pass()
 })
 
@@ -2848,7 +3036,7 @@ test('getPowerModeTimeline - fetches a 7d range as bounded 1m windows', async (t
 
   const start = 1700000000000
   const end = start + 7 * 24 * 60 * 60 * 1000
-  const result = await getPowerModeTimeline(mockCtx, { query: { start, end } })
+  const result = await getPowerModeTimeline(mockCtx, { query: { start, end, timezone: 'UTC' } })
 
   t.is(capturedPayloads.length, 14, 'should split 7d of 1m samples into 720-sample windows')
   t.is(capturedPayloads[0].key, 'stat-1m', 'should request the 1m stat log')
@@ -3386,6 +3574,31 @@ test('getContainerHistory - uses defaults when no start/end', async (t) => {
   t.is(capturedPayload.limit, 10080, 'should use default limit')
   t.ok(result.log, 'should return log array')
   t.is(result.log.length, 0, 'log should be empty with no data')
+  t.pass()
+})
+
+test('getContainerHistory - timezone param converts an explicit start/end', async (t) => {
+  let capturedPayload
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        capturedPayload = payload
+        return []
+      }
+    }
+  })
+
+  const localStart = Date.UTC(2026, 5, 1, 0, 0, 0)
+  const localEnd = Date.UTC(2026, 5, 1, 1, 0, 0)
+
+  await getContainerHistory(mockCtx, {
+    params: { id: 'bitdeer-9a' },
+    query: { start: localStart, end: localEnd, timezone: 'America/Campo_Grande' }
+  })
+
+  t.is(capturedPayload.start, localStart + 4 * 3600000, 'should shift the explicit start to real UTC')
+  t.is(capturedPayload.end, localEnd + 4 * 3600000, 'should shift the explicit end to real UTC')
   t.pass()
 })
 
@@ -4276,13 +4489,14 @@ test('getDowntime - shortfall on a mine hour is an operational issue', async (t)
   t.is(result.log[0].nominalPowerW, 10000000, 'nominal power from global config')
   t.is(result.log[0].downtimeRate, 0.4, '4 MW short of 10 MW nominal')
   t.is(result.log[0].curtailmentRate, 0, 'no curtailment on a mine hour')
+  t.is(result.log[0].energySoldRate, 0, 'nothing sold on a mine hour')
   t.is(result.log[0].operationalIssuesRate, 0.4, 'shortfall attributed to op issues')
   t.is(result.summary.avgDowntimeRate, 0.4, 'summary averages the buckets')
   t.is(result.summary.hasForecastData, true, 'forecast data was present')
   t.pass()
 })
 
-test('getDowntime - shortfall on a not_mine hour is curtailment', async (t) => {
+test('getDowntime - shortfall on a not_mine hour with available energy is energy sold', async (t) => {
   const mockCtx = downtimeCtx({
     powerRows: [downtimeHourRow(DOWNTIME_DAY_TS, 6000000)],
     forecast: [{
@@ -4295,10 +4509,77 @@ test('getDowntime - shortfall on a not_mine hour is curtailment', async (t) => {
   })
 
   t.is(result.log[0].downtimeRate, 0.4, 'same shortfall')
-  t.is(result.log[0].curtailmentRate, 0.4, 'attributed to curtailment')
+  t.is(result.log[0].curtailmentRate, 0, 'energy was fully available, so no curtailment')
+  t.is(result.log[0].energySoldRate, 0.4, 'available energy on a not-mining hour is sold')
   t.is(result.log[0].operationalIssuesRate, 0, 'not an op issue')
-  t.is(result.summary.avgCurtailmentRate, 0.4, 'summary reflects curtailment')
+  t.is(result.summary.avgEnergySoldRate, 0.4, 'summary reflects energy sold')
+  t.is(result.summary.avgCurtailmentRate, 0, 'summary reflects no curtailment')
   t.is(result.summary.avgOperationalIssuesRate, 0, 'summary reflects no op issues')
+  t.pass()
+})
+
+test('getDowntime - power production input drives the curtailment / energy sold split', async (t) => {
+  const hour2 = DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS
+  const hour3 = DOWNTIME_DAY_TS + 2 * DOWNTIME_HOUR_MS
+  const mockCtx = downtimeCtx({
+    powerRows: [
+      downtimeHourRow(DOWNTIME_DAY_TS, 0), // not mining, selling 5 MW
+      downtimeHourRow(hour2, 5000000), // mining on the 5 MW produced
+      downtimeHourRow(hour3, 3000000) // mining on 5 MW available but only 3 MW drawn
+    ],
+    forecast: [{
+      hourlyForecast: [
+        { start: DOWNTIME_DAY_TS, end: hour2, decision: 'not_mine', availableMw: 5, availableEnergy: 1 },
+        { start: hour2, end: hour3, decision: 'mine', availableMw: 5, availableEnergy: 1 },
+        { start: hour3, end: hour3 + DOWNTIME_HOUR_MS, decision: 'mine', availableMw: 5, availableEnergy: 1 }
+      ]
+    }]
+  })
+
+  const result = await getDowntime(mockCtx, {
+    query: { start: DOWNTIME_DAY_TS, end: hour3 + DOWNTIME_HOUR_MS, interval: '1h' }
+  })
+
+  const [selling, miningFull, miningShort] = result.log
+
+  t.is(selling.downtimeRate, 1, 'site idle while selling')
+  t.is(selling.curtailmentRate, 0.5, '5 of 10 MW never available')
+  t.is(selling.energySoldRate, 0.5, 'the 5 MW produced went to the grid')
+  t.is(selling.operationalIssuesRate, 0, 'fully explained')
+
+  t.is(miningFull.downtimeRate, 0.5, 'half of nominal drawn')
+  t.is(miningFull.curtailmentRate, 0.5, 'shortfall explained by limited production')
+  t.is(miningFull.energySoldRate, 0, 'nothing sold while mining')
+  t.is(miningFull.operationalIssuesRate, 0, 'no operational gap')
+
+  t.is(miningShort.downtimeRate, 0.7, '7 MW short of nominal')
+  t.is(miningShort.curtailmentRate, 0.5, 'availability explains 5 MW of it')
+  t.ok(Math.abs(miningShort.operationalIssuesRate - 0.2) < 1e-9, 'the rest is operational')
+  t.pass()
+})
+
+test('getDowntime - zero power production makes the whole shortfall curtailment', async (t) => {
+  const mockCtx = downtimeCtx({
+    powerRows: [downtimeHourRow(DOWNTIME_DAY_TS, 0)],
+    forecast: [{
+      hourlyForecast: [{
+        start: DOWNTIME_DAY_TS,
+        end: DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS,
+        decision: 'not_mine',
+        availableMw: 0,
+        availableEnergy: 0
+      }]
+    }]
+  })
+
+  const result = await getDowntime(mockCtx, {
+    query: { start: DOWNTIME_DAY_TS, end: DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS, interval: '1h' }
+  })
+
+  t.is(result.log[0].downtimeRate, 1, 'site idle')
+  t.is(result.log[0].curtailmentRate, 1, 'no energy available at all')
+  t.is(result.log[0].energySoldRate, 0, 'nothing to sell')
+  t.is(result.log[0].operationalIssuesRate, 0, 'fully explained')
   t.pass()
 })
 
@@ -4427,7 +4708,8 @@ test('getDowntime - interval=1d attributes hourly then aggregates per UTC day', 
     'day-spanning time range')
   t.is(result.log[0].powerW, 7500000, 'daily power is the mean of the hourly power')
   t.is(result.log[0].downtimeRate, 0.25, 'mean of 0.5 and 0 hourly downtime')
-  t.is(result.log[0].curtailmentRate, 0.25, 'curtailed-hour shortfall averaged over covered hours')
+  t.is(result.log[0].curtailmentRate, 0, 'energy was available, so nothing curtailed')
+  t.is(result.log[0].energySoldRate, 0.25, 'not-mining-hour shortfall averaged over covered hours')
   t.is(result.log[0].operationalIssuesRate, 0, 'no op issues on day one')
   t.is(result.log[1].downtimeRate, 0.5, 'second day from its single covered hour')
   t.is(result.log[1].operationalIssuesRate, 0.5, 'mine-hour shortfall is op issues')
@@ -4435,17 +4717,21 @@ test('getDowntime - interval=1d attributes hourly then aggregates per UTC day', 
   t.pass()
 })
 
-test('indexForecastDecisionsByHour - availability zero curtails even a mine decision', (t) => {
+test('indexForecastDecisionsByHour - availability maps to available power', (t) => {
   const cases = [
     { start: DOWNTIME_DAY_TS, decision: 'mine', available: 0 },
     { start: DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS, decision: 'mine', available: '0' },
-    { start: DOWNTIME_DAY_TS + 2 * DOWNTIME_HOUR_MS, decision: 'mine', availableEnergy: false }
+    { start: DOWNTIME_DAY_TS + 2 * DOWNTIME_HOUR_MS, decision: 'mine', availableEnergy: false },
+    { start: DOWNTIME_DAY_TS + 3 * DOWNTIME_HOUR_MS, decision: 'mine', availableMw: 5.5, availableEnergy: 1 },
+    { start: DOWNTIME_DAY_TS + 4 * DOWNTIME_HOUR_MS, decision: 'mine', available: 1 }
   ]
   const byHour = indexForecastDecisionsByHour([[{ hourlyForecast: cases }]])
 
-  t.is(byHour.get(DOWNTIME_DAY_TS), true, 'numeric 0 availability curtails')
-  t.is(byHour.get(DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS), true, 'string "0" availability curtails')
-  t.is(byHour.get(DOWNTIME_DAY_TS + 2 * DOWNTIME_HOUR_MS), true, 'availableEnergy false curtails')
+  t.alike(byHour.get(DOWNTIME_DAY_TS), { notMining: false, availableW: 0 }, 'numeric 0 availability means no power')
+  t.alike(byHour.get(DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS), { notMining: false, availableW: 0 }, 'string "0" availability means no power')
+  t.alike(byHour.get(DOWNTIME_DAY_TS + 2 * DOWNTIME_HOUR_MS), { notMining: false, availableW: 0 }, 'availableEnergy false means no power')
+  t.alike(byHour.get(DOWNTIME_DAY_TS + 3 * DOWNTIME_HOUR_MS), { notMining: false, availableW: 5500000 }, 'availableMw carries the exact power')
+  t.alike(byHour.get(DOWNTIME_DAY_TS + 4 * DOWNTIME_HOUR_MS), { notMining: false, availableW: null }, 'legacy yes means full capacity')
   t.pass()
 })
 
@@ -4457,8 +4743,47 @@ test('indexForecastDecisionsByHour - manual mine override wins over a not_mine d
     ]
   }]])
 
-  t.is(byHour.get(DOWNTIME_DAY_TS), false, 'override forces the hour to count as mining')
-  t.is(byHour.get(DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS), true, 'without override not_mine curtails')
+  t.is(byHour.get(DOWNTIME_DAY_TS).notMining, false, 'override forces the hour to count as mining')
+  t.is(byHour.get(DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS).notMining, true, 'without override not_mine stands')
+  t.pass()
+})
+
+test('indexForecastDecisionsByHour - wait statuses count as not mining', (t) => {
+  const byHour = indexForecastDecisionsByHour([[{
+    hourlyForecast: [
+      { start: DOWNTIME_DAY_TS, decision: 'wait_prod' },
+      { start: DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS, decision: 'wait_spot' },
+      { start: DOWNTIME_DAY_TS + 2 * DOWNTIME_HOUR_MS, decision: 'wait_prod', manualOverrideMine: true }
+    ]
+  }]])
+
+  t.is(byHour.get(DOWNTIME_DAY_TS).notMining, true, 'wait_prod is not a mining hour')
+  t.is(byHour.get(DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS).notMining, true, 'wait_spot is not a mining hour')
+  t.is(byHour.get(DOWNTIME_DAY_TS + 2 * DOWNTIME_HOUR_MS).notMining, false, 'unless overridden to mine')
+  t.pass()
+})
+
+test('getDowntime - available energy on a wait hour counts as energy sold', async (t) => {
+  const mockCtx = downtimeCtx({
+    powerRows: [downtimeHourRow(DOWNTIME_DAY_TS, 0)],
+    forecast: [{
+      hourlyForecast: [{
+        start: DOWNTIME_DAY_TS,
+        end: DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS,
+        decision: 'wait_spot',
+        availableMw: 5,
+        availableEnergy: 1
+      }]
+    }]
+  })
+
+  const result = await getDowntime(mockCtx, {
+    query: { start: DOWNTIME_DAY_TS, end: DOWNTIME_DAY_TS + DOWNTIME_HOUR_MS, interval: '1h' }
+  })
+
+  t.is(result.log[0].curtailmentRate, 0.5, 'unavailable half is curtailment')
+  t.is(result.log[0].energySoldRate, 0.5, 'produced energy on a non-mining hour is sold')
+  t.is(result.log[0].operationalIssuesRate, 0, 'fully explained')
   t.pass()
 })
 
@@ -4475,12 +4800,13 @@ test('indexForecastDecisionsByHour - ignores malformed payloads and entries', (t
 
 test('calculateDowntimeSummary - averages skip null-rate entries', (t) => {
   const summary = calculateDowntimeSummary([
-    { powerW: 6000000, downtimeRate: 0.4, curtailmentRate: 0.4, operationalIssuesRate: 0 },
-    { powerW: 8000000, downtimeRate: null, curtailmentRate: null, operationalIssuesRate: null }
+    { powerW: 6000000, downtimeRate: 0.4, curtailmentRate: 0.4, energySoldRate: 0.2, operationalIssuesRate: 0 },
+    { powerW: 8000000, downtimeRate: null, curtailmentRate: null, energySoldRate: null, operationalIssuesRate: null }
   ], 10000000, true)
 
   t.is(summary.avgDowntimeRate, 0.4, 'null rates excluded from the mean')
   t.is(summary.avgCurtailmentRate, 0.4, 'null rates excluded from the mean')
+  t.is(summary.avgEnergySoldRate, 0.2, 'null rates excluded from the mean')
   t.is(summary.avgPowerW, 7000000, 'power averaged over all entries')
   t.is(summary.minPowerW, 6000000, 'min power')
   t.is(summary.maxPowerW, 8000000, 'max power')

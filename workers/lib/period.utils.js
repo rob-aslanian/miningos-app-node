@@ -1,8 +1,49 @@
 'use strict'
 
-const { PERIOD_TYPES, NON_METRIC_KEYS } = require('./constants')
+const { PERIOD_TYPES, NON_METRIC_KEYS, LOCKED_TIMEZONE_DEFAULT } = require('./constants')
 
 const getStartOfDay = (ts) => Math.floor(ts / 86400000) * 86400000
+
+// Milliseconds to add to a UTC instant to read it as wall-clock time in `timeZone`.
+function zoneOffsetMs (ts, timeZone) {
+  const parts = {}
+  const formatted = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).formatToParts(new Date(ts))
+  for (const { type, value } of formatted) parts[type] = value
+
+  const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second)
+  return asUtc - ts
+}
+
+// First instant of the local calendar day (in `timeZone`) containing `ts`. DST-safe:
+// resolved twice because the naive guess can land on the wrong side of a shift.
+// A caller that doesn't pass a zone at all gets LOCKED_TIMEZONE_DEFAULT rather than
+// silently landing on the UTC grid - this function has no ctx, so it can't see the
+// site's own featureConfig.lockedTimezone, only the constants fallback. A caller that
+// wants true UTC has to say so explicitly with `'UTC'`.
+const localDayStart = (ts, timeZone) => {
+  const zone = timeZone || LOCKED_TIMEZONE_DEFAULT
+  if (zone === 'UTC') return getStartOfDay(ts)
+
+  const parts = {}
+  const formatted = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(new Date(ts))
+  for (const { type, value } of formatted) parts[type] = value
+
+  const wallClock = Date.UTC(+parts.year, +parts.month - 1, +parts.day)
+  const asTs = wallClock - zoneOffsetMs(wallClock, zone)
+  const settled = zoneOffsetMs(asTs, zone)
+  return settled === zoneOffsetMs(wallClock, zone) ? asTs : wallClock - settled
+}
 
 const convertMsToSeconds = (timestampMs) => {
   return Math.floor(timestampMs / 1000)
@@ -194,6 +235,7 @@ const getFilteredPeriodData = (
 
 module.exports = {
   getStartOfDay,
+  localDayStart,
   convertMsToSeconds,
   getPeriodEndDate,
   aggregateByPeriod,

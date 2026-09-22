@@ -5,6 +5,7 @@ const {
   HTTP_METHODS
 } = require('../../constants')
 const { getSitePowerConsumption } = require('../handlers/power.consumption.handlers')
+const { withLocalizedLog } = require('../../metrics.utils')
 const { createCachedAuthRoute } = require('../lib/routeHelpers')
 
 module.exports = (ctx) => {
@@ -23,6 +24,7 @@ module.exports = (ctx) => {
             powerAttribute: { type: 'string' },
             totalTransformerConsumption: { type: 'boolean' },
             limit: { type: 'integer' },
+            timezone: { type: 'string', maxLength: 100 },
             overwriteCache: { type: 'boolean' }
           },
           required: ['start', 'end']
@@ -33,10 +35,10 @@ module.exports = (ctx) => {
         (req) => [
           'site-power-consumption', req.query.start, req.query.end,
           req.query.interval, req.query.tag, req.query.powerAttribute,
-          req.query.totalTransformerConsumption, req.query.limit
+          req.query.totalTransformerConsumption, req.query.limit, req.query.timezone
         ],
         ENDPOINTS.SITE_POWER_CONSUMPTION,
-        getSitePowerConsumption
+        withLocalizedLog(getSitePowerConsumption)
       )
     }
   ]

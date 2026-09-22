@@ -31,6 +31,10 @@ const {
   parseEntryTs,
   parseEntryTimeRange,
   validateStartEnd,
+  resolveTimezone,
+  resolveStartEnd,
+  resolveOptionalTimeMs,
+  convertUtcToLocalMs,
   iterateRpcEntries,
   sumObjectValues,
   extractContainerFromMinerKey,
@@ -442,7 +446,10 @@ function rollupMonthly (log) {
 }
 
 async function getConsumption (ctx, req) {
-  const { start, end } = validateStartEnd(req)
+  const { start, end } = resolveStartEnd(ctx, req)
+  // Downstream grouped/by-meter/rack paths read start/end straight off req.query,
+  // so the converted UTC values have to replace the raw ones here for those to see them.
+  req = { ...req, query: { ...req.query, start, end } }
 
   if (req.query.groupBy) return getGroupedConsumption(ctx, req)
 
@@ -711,7 +718,10 @@ function calculateGroupedConsumptionSummary (log, groupBy) {
 }
 
 async function getEfficiency (ctx, req) {
-  const { start, end } = validateStartEnd(req)
+  const { start, end } = resolveStartEnd(ctx, req)
+  // Downstream grouped/rack paths read start/end straight off req.query, so the
+  // converted UTC values have to replace the raw ones here for those to see them.
+  req = { ...req, query: { ...req.query, start, end } }
 
   if (req.query.groupBy) return getGroupedEfficiency(ctx, req)
 
@@ -897,7 +907,10 @@ function calculateGroupedEfficiencySummary (log, groupBy) {
 }
 
 async function getMinerStatus (ctx, req) {
-  const { start, end } = validateStartEnd(req)
+  const { start, end } = resolveStartEnd(ctx, req)
+  // getGroupedMinerStatus reads start/end straight off req.query, so the converted
+  // UTC values have to replace the raw ones here for it to see them.
+  req = { ...req, query: { ...req.query, start, end } }
 
   if (req.query.groupBy) return getGroupedMinerStatus(ctx, req)
 
@@ -1428,7 +1441,7 @@ async function getInventoryMinerDistribution (ctx, req) {
 }
 
 async function getPowerMode (ctx, req) {
-  const { start, end } = validateStartEnd(req)
+  const { start, end } = resolveStartEnd(ctx, req)
 
   const interval = resolveInterval(start, end, req.query.interval)
   const config = getIntervalConfig(interval)
@@ -1545,8 +1558,12 @@ function resolvePowerModeTimelineInterval (start, end, requested) {
 
 async function getPowerModeTimeline (ctx, req) {
   const now = Date.now()
-  const start = Number(req.query.start) || (now - METRICS_TIME.ONE_MONTH_MS)
-  const end = Number(req.query.end) || now
+  const timezone = resolveTimezone(ctx, req)
+  // Only an explicit start/end is wall-clock time to convert, and only when the
+  // request itself sent `timezone` explicitly - the computed defaults below are
+  // already real UTC instants relative to "now".
+  const start = resolveOptionalTimeMs(req, timezone, req.query.start, now - METRICS_TIME.ONE_MONTH_MS)
+  const end = resolveOptionalTimeMs(req, timezone, req.query.end, now)
   const container = req.query.container || null
 
   if (start >= end) {
@@ -1665,8 +1682,23 @@ function processPowerModeTimelineData (results, containerFilter) {
   return aggregator.build()
 }
 
+// getPowerModeTimeline's log entries carry their timestamps as segments[].from/to
+// rather than a top-level `ts`, so they need their own mapper for withLocalizedLog.
+function localizePowerModeTimelineLog (log, timezone) {
+  if (!Array.isArray(log) || !timezone || timezone === 'UTC') return log
+
+  return log.map((entry) => ({
+    ...entry,
+    segments: (entry.segments || []).map((segment) => ({
+      ...segment,
+      from: convertUtcToLocalMs(segment.from, timezone),
+      to: convertUtcToLocalMs(segment.to, timezone)
+    }))
+  }))
+}
+
 async function getTemperature (ctx, req) {
-  const { start, end } = validateStartEnd(req)
+  const { start, end } = resolveStartEnd(ctx, req)
 
   const interval = resolveInterval(start, end, req.query.interval)
   const config = getIntervalConfig(interval)
@@ -1859,8 +1891,12 @@ async function getContainerHistory (ctx, req) {
   }
 
   const now = Date.now()
-  const start = Number(req.query.start) || (now - METRICS_TIME.ONE_DAY_MS)
-  const end = Number(req.query.end) || now
+  const timezone = resolveTimezone(ctx, req)
+  // Only an explicit start/end is wall-clock time to convert, and only when the
+  // request itself sent `timezone` explicitly - the computed defaults below are
+  // already real UTC instants relative to "now".
+  const start = resolveOptionalTimeMs(req, timezone, req.query.start, now - METRICS_TIME.ONE_DAY_MS)
+  const end = resolveOptionalTimeMs(req, timezone, req.query.end, now)
   const limit = Number(req.query.limit) || METRICS_DEFAULTS.CONTAINER_HISTORY_LIMIT
 
   if (start >= end) {
@@ -1925,7 +1961,7 @@ async function getCooling (ctx, req) {
     throw new Error('ERR_FEATURE_NOT_ENABLED')
   }
 
-  const { start, end } = validateStartEnd(req)
+  const { start, end } = resolveStartEnd(ctx, req)
 
   const requested = COOLING_INTERVAL_ALIASES[req.query.interval] || req.query.interval
   const interval = resolveInterval(start, end, requested)
@@ -2006,9 +2042,11 @@ function calculateCoolingSummary (log) {
 
 const HOUR_MS = 60 * 60 * 1000
 
-// Maps each forecast hour to whether the site was intentionally curtailed.
-// manualOverrideMine forces mining regardless of the stored decision, and an
-// unavailable-energy hour counts as curtailed even if the decision was 'mine'.
+// Maps each forecast hour to the inputs the downtime split needs: whether the
+// forecast said not to mine (manualOverrideMine forces mining regardless of
+// the stored decision) and how much energy was available. availableW is the
+// power-production input (MW for the whole hour); a legacy yes/no flag maps to
+// full capacity / zero, and null means "assume full capacity".
 function indexForecastDecisionsByHour (forecastResults) {
   const byHour = new Map()
   for (const orkResult of Array.isArray(forecastResults) ? forecastResults : []) {
@@ -2018,18 +2056,28 @@ function indexForecastDecisionsByHour (forecastResults) {
         const start = Number(item?.start)
         if (!Number.isFinite(start)) continue
         const hourTs = Math.floor(start / HOUR_MS) * HOUR_MS
-        const curtailed = item.manualOverrideMine === true
+        // wait_prod / wait_spot hours are not mining hours either
+        const notMining = item.manualOverrideMine === true
           ? false
-          : normalizeAvailability(item) === 0 || item.decision === 'not_mine'
-        byHour.set(hourTs, curtailed)
+          : item.decision !== 'mine'
+        const availableMw = Number(item.availableMw)
+        const availableW = Number.isFinite(availableMw) && availableMw >= 0
+          ? availableMw * 1e6
+          : normalizeAvailability(item) === 0 ? 0 : null
+        byHour.set(hourTs, { notMining, availableW })
       }
     }
   }
   return byHour
 }
 
-// Hours without a forecast entry count as 'mine', so an unexplained shortfall
-// surfaces as an operational issue rather than being hidden as curtailment.
+// Splits each hour's shortfall against nominal capacity into three buckets:
+// curtailment is the energy that was never available (nominal minus the
+// power-production input), energy sold is the available energy routed to the
+// grid on a not-mining hour, and whatever shortfall is left is operational.
+// Hours without a forecast entry count as 'mine' at full availability, so an
+// unexplained shortfall surfaces as an operational issue rather than being
+// hidden as curtailment.
 function buildHourlyDowntime (entries, nominalPowerW, decisionByHour) {
   return entries.map(val => {
     const ts = parseEntryTs(val.ts)
@@ -2038,13 +2086,25 @@ function buildHourlyDowntime (entries, nominalPowerW, decisionByHour) {
 
     let downtimeRate = null
     let curtailmentRate = null
+    let energySoldRate = null
     let operationalIssuesRate = null
     if (nominalPowerW) {
       downtimeRate = Math.max(0, nominalPowerW - powerW) / nominalPowerW
       const hourTs = Math.floor(ts / HOUR_MS) * HOUR_MS
-      const curtailed = decisionByHour.get(hourTs) === true
-      curtailmentRate = curtailed ? downtimeRate : 0
-      operationalIssuesRate = curtailed ? 0 : downtimeRate
+      const hour = decisionByHour.get(hourTs)
+      const availableW = hour?.availableW ?? nominalPowerW
+
+      // capped at the observed downtime so the three buckets always sum to it
+      // (a site mining on purchased energy has no available production, yet no
+      // downtime either)
+      curtailmentRate = Math.min(
+        Math.max(0, nominalPowerW - availableW) / nominalPowerW,
+        downtimeRate
+      )
+      energySoldRate = hour?.notMining && availableW > 0
+        ? Math.min(availableW / nominalPowerW, downtimeRate - curtailmentRate)
+        : 0
+      operationalIssuesRate = Math.max(0, downtimeRate - curtailmentRate - energySoldRate)
     }
 
     return {
@@ -2054,6 +2114,7 @@ function buildHourlyDowntime (entries, nominalPowerW, decisionByHour) {
       nominalPowerW,
       downtimeRate,
       curtailmentRate,
+      energySoldRate,
       operationalIssuesRate
     }
   })
@@ -2078,6 +2139,7 @@ function aggregateDowntimeDaily (hourlyLog) {
       nominalPowerW: hours[0].nominalPowerW,
       downtimeRate: meanOfField(hours, 'downtimeRate'),
       curtailmentRate: meanOfField(hours, 'curtailmentRate'),
+      energySoldRate: meanOfField(hours, 'energySoldRate'),
       operationalIssuesRate: meanOfField(hours, 'operationalIssuesRate')
     }))
 }
@@ -2096,6 +2158,7 @@ function calculateDowntimeSummary (log, nominalPowerW, hasForecastData) {
   return {
     avgDowntimeRate: meanOfField(log, 'downtimeRate'),
     avgCurtailmentRate: meanOfField(log, 'curtailmentRate'),
+    avgEnergySoldRate: meanOfField(log, 'energySoldRate'),
     avgOperationalIssuesRate: meanOfField(log, 'operationalIssuesRate'),
     avgPowerW: meanOfField(log, 'powerW'),
     minPowerW: powers.length ? Math.min(...powers) : null,
@@ -2106,7 +2169,7 @@ function calculateDowntimeSummary (log, nominalPowerW, hasForecastData) {
 }
 
 async function getDowntime (ctx, req) {
-  const { start, end } = validateStartEnd(req)
+  const { start, end } = resolveStartEnd(ctx, req)
   const interval = req.query.interval ||
     ((end - start) <= METRICS_TIME.TWO_DAYS_MS ? '1h' : '1d')
 
@@ -2194,6 +2257,7 @@ module.exports = {
   getPowerModeTimeline,
   processPowerModeTimelineData,
   resolvePowerModeTimelineInterval,
+  localizePowerModeTimelineLog,
   getTemperature,
   processTemperatureData,
   calculateTemperatureSummary,
