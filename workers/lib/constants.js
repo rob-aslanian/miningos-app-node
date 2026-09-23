@@ -318,10 +318,10 @@ const DEFAULTS = {
   OPERATION_COUNT: 1
 }
 
-// Display-only fallback for getFeatureConfig's `lockedTimezone` field when
-// common.json's featureConfig.lockedTimezone isn't set. It does not feed into
-// start/end or log ts conversion - those only convert on an explicit request
-// `timezone` (see resolveTimezone in metrics.utils.js).
+// Fallback site zone when common.json's featureConfig.lockedTimezone isn't set: shown by
+// getFeatureConfig, and resolved by resolveTimezone (metrics.utils.js) for every request
+// that omits `timezone`. That resolved zone cuts all finance/* day and month buckets and
+// metrics/downtime's daily ones. It never reinterprets start/end (always true UTC)
 const LOCKED_TIMEZONE_DEFAULT = 'America/Campo_Grande'
 
 const STATUS_CODES = {
@@ -468,7 +468,8 @@ const LOG_KEYS = {
   STAT_5M: 'stat-5m',
   STAT_30M: 'stat-30m',
   STAT_1D: 'stat-1D',
-  STAT_POSITION_1D: 'stat-position-1D'
+  STAT_POSITION_1D: 'stat-position-1D',
+  ENERGY_1H: 'energy-1h'
 }
 
 const WORKER_TAGS = {
@@ -877,7 +878,8 @@ const TAIL_LOG_BUCKET_MS = {
   'stat-30m': 30 * 60 * 1000,
   'stat-3h': 3 * 60 * 60 * 1000,
   'stat-1D': 24 * 60 * 60 * 1000,
-  'stat-position-1D': 24 * 60 * 60 * 1000
+  'stat-position-1D': 24 * 60 * 60 * 1000,
+  'energy-1h': 60 * 60 * 1000
 }
 
 // The one stat key with no fixed bucket width: stat-rtd holds the latest sample

@@ -77,17 +77,21 @@ function rollupLocalDaysMean (log, timezone, field) {
   return days
 }
 
-async function getDailySeries (ctx, start, end, handler, field, timezone = 'UTC') {
+async function getDailySeries (ctx, start, end, handler, field, timezone) {
   const cache = getDailySeriesCache(ctx)
   const now = Date.now()
   const months = localMonthsInRange(start, end, timezone)
-  const cacheable = (month) => month.end < now
+  // A month that has ended can be answered from cache, but only a month the request
+  // covers end to end may be stored: a partial edge month is a slice, and caching it
+  // as the whole would drop the days outside that slice from every later request.
+  const ended = (month) => month.end < now
+  const cacheable = (month) => ended(month) && month.start >= start && month.end <= end
 
   const byDay = {}
   const missing = []
 
   for (const month of months) {
-    const cached = cacheable(month)
+    const cached = ended(month)
       ? cache.get(dailySeriesCacheKey(month.key, timezone, field), now)
       : undefined
     if (cached) Object.assign(byDay, cached)
@@ -101,7 +105,11 @@ async function getDailySeries (ctx, start, end, handler, field, timezone = 'UTC'
       start: Math.max(start, missing[0].start),
       end: Math.min(end, missing[missing.length - 1].end)
     }
-    const { log } = await handler(ctx, { query: { start: span.start, end: span.end, interval: '1h' } })
+    // A window ending exactly on a month boundary leaves a zero-width edge month; the
+    // handlers reject start >= end, and there is nothing in it to fetch anyway.
+    const { log } = span.end > span.start
+      ? await handler(ctx, { query: { start: span.start, end: span.end, interval: '1h' } })
+      : { log: [] }
 
     const byMonthLog = new Map()
     for (const entry of log) {
@@ -119,6 +127,12 @@ async function getDailySeries (ctx, start, end, handler, field, timezone = 'UTC'
         cache.set(dailySeriesCacheKey(month.key, timezone, field), monthDays, now)
       }
     }
+  }
+
+  // A cached month is whole, so clamp to the local days [start, end] touches.
+  const firstDay = localDayStart(start, timezone)
+  for (const dayTs of Object.keys(byDay)) {
+    if (Number(dayTs) < firstDay || Number(dayTs) > end) delete byDay[dayTs]
   }
 
   return byDay
@@ -177,7 +191,7 @@ async function getEnergyBalance (ctx, req) {
       .then(r => cb(null, r)).catch(cb)
   ])
 
-  const dailyTransactions = addRebates(processTransactions(transactionResults, null, timezone), poolRebates, timezone)
+  const dailyTransactions = addRebates(processTransactions(transactionResults, { start, end }, timezone), poolRebates, timezone)
   const dailyPrices = processPriceData(priceResults, timezone)
   const currentBtcPrice = extractCurrentPrice(currentPriceResults)
   const costsByMonth = processCostsData(productionCosts)
@@ -253,7 +267,8 @@ async function getEnergyBalance (ctx, req) {
     meanKeys: [
       'sitePowerMW', 'powerW', 'btcPrice', 'energyRevenuePerMWh', 'allInCostPerMWh',
       'curtailmentRate', 'operationalIssuesRate', 'powerUtilization'
-    ]
+    ],
+    timezone
   })
 
   for (const entry of aggregated) {
@@ -267,7 +282,7 @@ async function getEnergyBalance (ctx, req) {
   return { log: aggregated, summary }
 }
 
-function processPriceData (results, timezone = 'UTC') {
+function processPriceData (results, timezone) {
   const daily = {}
   for (const res of results) {
     if (res.error || !res) continue
@@ -286,11 +301,10 @@ function processPriceData (results, timezone = 'UTC') {
   return daily
 }
 
-// Both callers request stats-history with groupRange, so ts arrives as a range string rather
-// than a number -- see parseEntryTs. localDayStart would turn that NaN into a bogus bucket and
-// every reading would land there instead of being dropped by the guard below, leaving
-// curtailment and operational issues with a wrong value rather than no data at all.
-function processEnergyData (results, aggrField, timezone = 'UTC') {
+// Both callers request stats-history with groupRange, so ts arrives as a "<start>-<end>"
+// range string rather than a number; parseEntryTs reads its start, and an entry it can't
+// parse is skipped.
+function processEnergyData (results, aggrField, timezone) {
   const daily = {}
   for (const res of results) {
     if (!res || res.error) continue
@@ -325,7 +339,7 @@ async function getPoolRebates (ctx, start, end) {
   return Array.isArray(rebates) ? rebates : []
 }
 
-function processForecastHistory (results, timezone = 'UTC') {
+function processForecastHistory (results, timezone) {
   const daily = {}
   for (const res of results) {
     if (!res || res.error) continue
@@ -490,7 +504,7 @@ async function getEbitda (ctx, req) {
       .then(r => cb(null, r)).catch(cb)
   ])
 
-  const dailyTransactions = addRebates(processTransactions(transactionResults, null, timezone), poolRebates, timezone)
+  const dailyTransactions = addRebates(processTransactions(transactionResults, { start, end }, timezone), poolRebates, timezone)
   const dailyPrices = processEbitdaPrices(priceResults, timezone)
   const currentBtcPrice = extractCurrentPrice(currentPriceResults)
   const costsByMonth = processCostsData(productionCosts)
@@ -543,7 +557,8 @@ async function getEbitda (ctx, req) {
   }
 
   const aggregated = aggregateByPeriod(log, period, [], {
-    meanKeys: ['btcPrice', 'powerW', 'hashrateMhs']
+    meanKeys: ['btcPrice', 'powerW', 'hashrateMhs'],
+    timezone
   })
   for (const entry of aggregated) entry.btcProductionCost = safeDiv(entry.totalCostsUSD, entry.revenueBTC)
   const summary = calculateEbitdaSummary(aggregated, currentBtcPrice)
@@ -551,7 +566,7 @@ async function getEbitda (ctx, req) {
   return { log: aggregated, summary }
 }
 
-function processEbitdaPrices (results, timezone = 'UTC') {
+function processEbitdaPrices (results, timezone) {
   const daily = {}
   for (const res of results) {
     if (res.error || !res) continue
@@ -672,7 +687,8 @@ async function getCostSummary (ctx, req) {
   }
 
   const aggregated = aggregateByPeriod(log, period, [], {
-    meanKeys: ['btcPrice', 'allInCostPerMWh', 'energyCostPerMWh']
+    meanKeys: ['btcPrice', 'allInCostPerMWh', 'energyCostPerMWh'],
+    timezone
   })
   const summary = calculateCostSummary(aggregated)
 
@@ -738,7 +754,7 @@ async function getSubsidyFees (ctx, req) {
     })
   }
 
-  const aggregated = aggregateByPeriod(log, period)
+  const aggregated = aggregateByPeriod(log, period, [], { timezone })
   const summary = calculateSubsidyFeesSummary(aggregated)
 
   return { log: aggregated, summary }
@@ -788,7 +804,7 @@ async function getRevenue (ctx, req) {
     query
   })
 
-  const dailyRevenue = processTransactions(transactionResults, { trackFees: true }, timezone)
+  const dailyRevenue = processTransactions(transactionResults, { trackFees: true, start, end }, timezone)
 
   const log = []
   for (const dayTs of Object.keys(dailyRevenue).sort()) {
@@ -804,7 +820,7 @@ async function getRevenue (ctx, req) {
     })
   }
 
-  const aggregated = aggregateByPeriod(log, period)
+  const aggregated = aggregateByPeriod(log, period, [], { timezone })
   const summary = calculateRevenueSummary(aggregated)
 
   return { log: aggregated, summary }
@@ -953,7 +969,7 @@ async function getRevenueSummary (ctx, req) {
     }).then(r => cb(null, r)).catch(cb)
   ])
 
-  const dailyRevenue = addRebates(processTransactions(transactionResults, { trackFees: true }, timezone), poolRebates, timezone)
+  const dailyRevenue = addRebates(processTransactions(transactionResults, { trackFees: true, start, end }, timezone), poolRebates, timezone)
   const dailyPrices = processEbitdaPrices(priceResults, timezone)
   const currentBtcPrice = extractCurrentPrice(currentPriceResults)
   const costsByMonth = processCostsData(productionCosts)
@@ -973,6 +989,7 @@ async function getRevenueSummary (ctx, req) {
   const log = []
   for (const dayTs of [...allDays].sort()) {
     const ts = Number(dayTs)
+    // Forecast and price days are not clamped at their source, unlike transactions.
     if (ts < start || ts > end) continue
 
     const revenue = dailyRevenue[dayTs] || {}
@@ -1064,7 +1081,8 @@ async function getRevenueSummary (ctx, req) {
       'btcPrice', 'powerW', 'hashrateMhs', 'energyRevenuePerMWh', 'netEnergyRevenuePerMWh', 'allInCostPerMWh',
       'hashRevenueBTCPerPHsPerDay', 'hashRevenueUSDPerPHsPerDay', 'netHashRevenueUSDPerPHsPerDay',
       'curtailmentRate', 'operationalIssuesRate', 'powerUtilization', 'lcoeUsdPerMwh'
-    ]
+    ],
+    timezone
   })
   for (const entry of aggregated) entry.btcProductionCost = safeDiv(entry.totalCostsUSD, entry.revenueBTC)
   const summary = calculateDetailedRevenueSummary(aggregated, currentBtcPrice)
@@ -1246,7 +1264,7 @@ async function getHashRevenue (ctx, req) {
     }).then(r => cb(null, r)).catch(cb)
   ])
 
-  const dailyTransactions = processTransactions(transactionResults, { trackFees: true }, timezone)
+  const dailyTransactions = processTransactions(transactionResults, { trackFees: true, start, end }, timezone)
   const dailyPrices = processEbitdaPrices(priceResults, timezone)
   const currentBtcPrice = extractCurrentPrice(currentPriceResults)
   const dailyNetworkHashrate = processNetworkHashrateData(networkHashrateResults, timezone)
@@ -1294,14 +1312,15 @@ async function getHashRevenue (ctx, req) {
       'btcPrice', 'hashrateMhs', 'networkHashrateMhs',
       'hashRevenueBTCPerPHsPerDay', 'hashRevenueUSDPerPHsPerDay', 'hashCostBTCPerPHsPerDay', 'hashCostUSDPerPHsPerDay',
       'networkHashPriceBTCPerPHsPerDay', 'networkHashPriceUSDPerPHsPerDay'
-    ]
+    ],
+    timezone
   })
   const summary = calculateHashRevenueSummary(aggregated)
 
   return { log: aggregated, summary }
 }
 
-function processNetworkHashrateData (results, timezone = 'UTC') {
+function processNetworkHashrateData (results, timezone) {
   const daily = {}
   for (const res of results) {
     if (!res || res.error) continue
@@ -1425,11 +1444,6 @@ function calculateHashRevenueSummary (log) {
 const WATTS_PER_MW = 1e6
 const HOURS_PER_DAY = 24
 
-function getStartOfMonthUtc (ts) {
-  const date = new Date(ts)
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)
-}
-
 async function getPowerCost (ctx, req) {
   const { start, end, timezone } = resolveStartEnd(ctx, req)
   const startMonthTs = localMonthStart(start, timezone)
@@ -1503,7 +1517,7 @@ async function getPowerCost (ctx, req) {
   return { log }
 }
 
-function processDailyRevenueBtc (results, start, end, timezone = 'UTC') {
+function processDailyRevenueBtc (results, start, end, timezone) {
   const startDay = localDayStart(start, timezone)
   const endDay = localDayStart(end, timezone)
   const daily = {}
@@ -1532,7 +1546,7 @@ function processDailyRevenueBtc (results, start, end, timezone = 'UTC') {
   return daily
 }
 
-function processDailyAvgPrices (results, start, end, timezone = 'UTC') {
+function processDailyAvgPrices (results, start, end, timezone) {
   const startDay = localDayStart(start, timezone)
   const endDay = localDayStart(end, timezone)
   const sums = {}
@@ -1559,7 +1573,7 @@ function processDailyAvgPrices (results, start, end, timezone = 'UTC') {
   return daily
 }
 
-function sumCostsByMonth (costs, startMonthTs, endMonthTs, timezone = 'UTC') {
+function sumCostsByMonth (costs, startMonthTs, endMonthTs, timezone) {
   const byMonth = {}
   if (!Array.isArray(costs)) return byMonth
   for (const entry of costs) {
@@ -1648,7 +1662,6 @@ module.exports = {
   getRevenueSummary,
   getHashRevenue,
   getPowerCost,
-  getStartOfMonthUtc,
   processDailyRevenueBtc,
   processDailyAvgPrices,
   sumCostsByMonth,

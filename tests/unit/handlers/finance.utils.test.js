@@ -5,7 +5,6 @@ const { LOCKED_TIMEZONE_DEFAULT } = require('../../../workers/lib/constants')
 const {
   validateStartEnd,
   resolveTimezone,
-  convertLocalToUtcMs,
   resolveStartEnd,
   normalizeTimestampMs,
   processTransactions,
@@ -91,39 +90,22 @@ test('resolveTimezone - rejects an invalid IANA timezone', (t) => {
   t.pass()
 })
 
-// ==================== convertLocalToUtcMs ====================
-
-test('convertLocalToUtcMs - UTC is a no-op', (t) => {
-  const ms = Date.UTC(2026, 5, 1, 0, 0, 0)
-  t.is(convertLocalToUtcMs(ms, 'UTC'), ms)
-  t.pass()
-})
-
-test('convertLocalToUtcMs - shifts wall-clock local time to the real UTC instant', (t) => {
-  const localMidnight = Date.UTC(2026, 5, 1, 0, 0, 0)
-  // America/Campo_Grande is UTC-4 with no DST, so local midnight is 04:00 UTC.
-  t.is(convertLocalToUtcMs(localMidnight, 'America/Campo_Grande'), localMidnight + 4 * 3600000)
-  // Asia/Kolkata is UTC+5:30, so local midnight is the previous day 18:30 UTC.
-  t.is(convertLocalToUtcMs(localMidnight, 'Asia/Kolkata'), localMidnight - 5.5 * 3600000)
-  t.pass()
-})
-
 // ==================== resolveStartEnd ====================
 
-test('resolveStartEnd - converts start/end using the request timezone', (t) => {
+test('resolveStartEnd - never reinterprets start/end, even with an explicit request timezone', (t) => {
   const ctx = { conf: {} }
-  const localStart = Date.UTC(2026, 5, 1, 0, 0, 0)
-  const localEnd = Date.UTC(2026, 5, 2, 0, 0, 0)
-  const req = { query: { start: localStart, end: localEnd, timezone: 'America/Campo_Grande' } }
+  const start = Date.UTC(2026, 5, 1, 0, 0, 0)
+  const end = Date.UTC(2026, 5, 2, 0, 0, 0)
+  const req = { query: { start, end, timezone: 'America/Campo_Grande' } }
 
-  const { start, end, timezone } = resolveStartEnd(ctx, req)
-  t.is(timezone, 'America/Campo_Grande')
-  t.is(start, localStart + 4 * 3600000)
-  t.is(end, localEnd + 4 * 3600000)
+  const result = resolveStartEnd(ctx, req)
+  t.is(result.timezone, 'America/Campo_Grande')
+  t.is(result.start, start, 'start is a true UTC instant, same as export')
+  t.is(result.end, end, 'end is a true UTC instant, same as export')
   t.pass()
 })
 
-test('resolveStartEnd - resolves lockedTimezone but never shifts start/end without an explicit request timezone', (t) => {
+test('resolveStartEnd - resolves lockedTimezone but never shifts start/end', (t) => {
   const ctx = { conf: { featureConfig: { lockedTimezone: 'America/Campo_Grande' } } }
   const start = Date.UTC(2026, 5, 1, 0, 0, 0)
   const end = Date.UTC(2026, 5, 2, 0, 0, 0)
@@ -206,7 +188,7 @@ test('processTransactions - Ocean earnings dated by ISO string are not dropped',
     }]
   ]
 
-  const daily = processTransactions(results, { trackFees: true })
+  const daily = processTransactions(results, { trackFees: true }, 'UTC')
   const day = daily[Date.UTC(2026, 4, 28)]
   t.ok(day, 'the ISO-dated earning lands on its own UTC day')
   t.is(day.revenueBTC, 2632155 / 1e8)
@@ -220,7 +202,7 @@ test('processTransactions - mixed f2pool and Ocean racks both contribute', (t) =
     [{ transactions: [{ ts: '2026-05-28T16:46:30', satoshis_net_earned: 100000000 }] }]
   ]
 
-  const daily = processTransactions(results, { trackFees: true })
+  const daily = processTransactions(results, { trackFees: true }, 'UTC')
   const total = Object.values(daily).reduce((sum, d) => sum + d.revenueBTC, 0)
   t.is(Object.keys(daily).length, 2, 'one day per pool')
   t.is(total, 1.0001, 'both pools counted')
@@ -231,7 +213,7 @@ test('processTransactions - Ocean data (sats)', (t) => {
   const results = [
     [{ transactions: [{ ts: 1700006400000, satoshis_net_earned: 50000000 }] }]
   ]
-  const daily = processTransactions(results)
+  const daily = processTransactions(results, {}, 'UTC')
   const key = Object.keys(daily)[0]
   t.is(daily[key].revenueBTC, 0.5, 'should convert sats to BTC')
   t.is(daily[key].feesBTC, undefined, 'should not track fees by default')
@@ -242,7 +224,7 @@ test('processTransactions - F2Pool data (BTC)', (t) => {
   const results = [
     [{ transactions: [{ created_at: 1700006400, changed_balance: 0.001 }] }]
   ]
-  const daily = processTransactions(results)
+  const daily = processTransactions(results, {}, 'UTC')
   const key = Object.keys(daily)[0]
   t.is(daily[key].revenueBTC, 0.001, 'should use changed_balance directly as BTC')
   t.pass()
@@ -258,7 +240,7 @@ test('processTransactions - with trackFees (Ocean data)', (t) => {
       }]
     }]
   ]
-  const daily = processTransactions(results, { trackFees: true })
+  const daily = processTransactions(results, { trackFees: true }, 'UTC')
   const key = Object.keys(daily)[0]
   t.is(daily[key].revenueBTC, 0.5, 'should convert sats to BTC')
   t.is(daily[key].feesBTC, 0.01, 'should track fees in BTC')
@@ -275,7 +257,7 @@ test('processTransactions - with trackFees (F2Pool data)', (t) => {
       }]
     }]
   ]
-  const daily = processTransactions(results, { trackFees: true })
+  const daily = processTransactions(results, { trackFees: true }, 'UTC')
   const key = Object.keys(daily)[0]
   t.is(daily[key].revenueBTC, 0.001, 'should use changed_balance directly')
   t.is(daily[key].feesBTC, 0.0001, 'should extract tx_fee')
@@ -286,14 +268,14 @@ test('processTransactions - seconds timestamps normalized', (t) => {
   const results = [
     [{ transactions: [{ ts: 1700006400, changed_balance: 0.001 }] }]
   ]
-  const daily = processTransactions(results)
+  const daily = processTransactions(results, {}, 'UTC')
   t.ok(Object.keys(daily).length > 0, 'should have entries from seconds timestamps')
   t.pass()
 })
 
 test('processTransactions - error results skipped', (t) => {
   const results = [{ error: 'timeout' }]
-  const daily = processTransactions(results)
+  const daily = processTransactions(results, {}, 'UTC')
   t.is(Object.keys(daily).length, 0, 'should be empty for error results')
   t.pass()
 })
@@ -302,13 +284,13 @@ test('processTransactions - null entries skipped', (t) => {
   const results = [
     [{ transactions: [null, undefined] }]
   ]
-  const daily = processTransactions(results)
+  const daily = processTransactions(results, {}, 'UTC')
   t.is(Object.keys(daily).length, 0, 'should be empty for null entries')
   t.pass()
 })
 
 test('processTransactions - empty results', (t) => {
-  const daily = processTransactions([])
+  const daily = processTransactions([], {}, 'UTC')
   t.is(Object.keys(daily).length, 0, 'should be empty')
   t.pass()
 })
@@ -362,7 +344,7 @@ test('processBlockData - array items', (t) => {
       }]
     }]
   ]
-  const daily = processBlockData(results)
+  const daily = processBlockData(results, 'UTC')
   const key = Object.keys(daily)[0]
   t.is(daily[key].blockReward, 6.25, 'should extract blockReward')
   t.is(daily[key].blockTotalFees, 0.5, 'should extract blockTotalFees')
@@ -377,7 +359,7 @@ test('processBlockData - flat per-ork items (production shape)', (t) => {
       { ts: 1700006400000, blockSize: 1200000, blockHash: 'def', blockReward: 6.25, blockTotalFees: 0.3 }
     ]
   ]
-  const daily = processBlockData(results)
+  const daily = processBlockData(results, 'UTC')
   const key = Object.keys(daily)[0]
   t.is(daily[key].blockReward, 12.5, 'should sum blockReward across same-day items')
   t.is(daily[key].blockTotalFees, 0.8, 'should sum blockTotalFees across same-day items')
@@ -389,7 +371,7 @@ test('processBlockData - object-keyed items', (t) => {
   const results = [
     [{ data: { 1700006400000: { blockReward: 6.25, blockTotalFees: 0.5 } } }]
   ]
-  const daily = processBlockData(results)
+  const daily = processBlockData(results, 'UTC')
   const key = Object.keys(daily)[0]
   t.is(daily[key].blockReward, 6.25, 'should extract from object keys')
   t.is(daily[key].blockTotalFees, 0.5, 'should extract fees from object keys')
@@ -406,7 +388,7 @@ test('processBlockData - alt field names', (t) => {
       }]
     }]
   ]
-  const daily = processBlockData(results)
+  const daily = processBlockData(results, 'UTC')
   const key = Object.keys(daily)[0]
   t.is(daily[key].blockReward, 6.25, 'should handle snake_case field')
   t.is(daily[key].blockTotalFees, 0.5, 'should handle total_fees field')
@@ -414,8 +396,8 @@ test('processBlockData - alt field names', (t) => {
 })
 
 test('processBlockData - error/empty results', (t) => {
-  t.is(Object.keys(processBlockData([{ error: 'timeout' }])).length, 0, 'error results empty')
-  t.is(Object.keys(processBlockData([])).length, 0, 'empty results empty')
+  t.is(Object.keys(processBlockData([{ error: 'timeout' }], 'UTC')).length, 0, 'error results empty')
+  t.is(Object.keys(processBlockData([], 'UTC')).length, 0, 'empty results empty')
   t.pass()
 })
 
@@ -423,15 +405,23 @@ test('processTransactions buckets f2pool payouts by mining_extra.mining_date whe
   const { processTransactions } = require('../../../workers/lib/server/handlers/finance.utils')
   const miningDay = 1700006400000
   const settleDay = miningDay + 86400000
-  const daily = processTransactions([[{ transactions: [{ created_at: settleDay / 1000, changed_balance: 1, mining_extra: { mining_date: miningDay / 1000 } }] }]])
+  const daily = processTransactions([[{ transactions: [{ created_at: settleDay / 1000, changed_balance: 1, mining_extra: { mining_date: miningDay / 1000 } }] }]], {}, 'UTC')
   t.alike(Object.keys(daily), [String(miningDay)])
+})
+
+test('processTransactions drops transactions whose mining date is outside start/end', (t) => {
+  const day = 1700006400000
+  const DAY = 86400000
+  const tx = (miningMs) => ({ created_at: (day + DAY) / 1000, changed_balance: 1, mining_extra: { mining_date: miningMs / 1000 } })
+  const daily = processTransactions([[{ transactions: [tx(day - DAY), tx(day), tx(day + DAY)] }]], { start: day, end: day + DAY - 1 }, 'UTC')
+  t.alike(Object.keys(daily), [String(day)], 'the day before start and the day after end are dropped')
 })
 
 test('addRebates folds rebates into revenueBTC and keeps the payout/rebate split', (t) => {
   const { addRebates } = require('../../../workers/lib/server/handlers/finance.utils')
   const d1 = 1700006400000
   const d2 = d1 + 86400000
-  const daily = addRebates({ [d1]: { revenueBTC: 1 } }, [{ ts: d1 + 5, amountBTC: 0.5 }, { ts: d2, amountBTC: 0.25 }])
+  const daily = addRebates({ [d1]: { revenueBTC: 1 } }, [{ ts: d1 + 5, amountBTC: 0.5 }, { ts: d2, amountBTC: 0.25 }], 'UTC')
   t.alike(daily[d1], { revenueBTC: 1.5, payoutBTC: 1, rebateBTC: 0.5 })
   t.alike(daily[d2], { revenueBTC: 0.25, payoutBTC: 0, rebateBTC: 0.25 })
 })

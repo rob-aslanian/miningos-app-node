@@ -26,7 +26,6 @@ const {
   getHashRevenue,
   getPowerCost,
   getProductionCosts,
-  getStartOfMonthUtc,
   processDailyRevenueBtc,
   processDailyAvgPrices,
   processNetworkHashrateData,
@@ -229,7 +228,7 @@ test('processPriceData - processes mempool price data', (t) => {
     [{ ts: 1700006400000, priceUSD: 40000 }]
   ]
 
-  const daily = processPriceData(results)
+  const daily = processPriceData(results, 'UTC')
   t.ok(typeof daily === 'object', 'should return object')
   t.ok(Object.keys(daily).length > 0, 'should have entries')
   const key = Object.keys(daily)[0]
@@ -363,6 +362,39 @@ test('getDailySeries - caches a completed month on ctx and does not refetch it',
   t.is(tailLogCalls, 1, 'the second call for the same completed month is served from cache')
   t.alike(first, second, 'cached result matches the freshly-fetched one')
   t.pass()
+})
+
+// Hourly power for every hour of Jan 2024, served from a plain handler so the tests see
+// exactly what getDailySeries asked for.
+function hourlyJanuaryHandler () {
+  const log = []
+  for (let ts = Date.UTC(2024, 0, 1); ts < Date.UTC(2024, 1, 1); ts += 3600000) log.push({ ts, powerW: 1 })
+  return async (ctx, req) => ({ log: log.filter(e => e.ts >= req.query.start && e.ts <= req.query.end) })
+}
+
+test('getDailySeries - a partially covered month is not cached as the whole month', async (t) => {
+  const ctx = {}
+  const handler = hourlyJanuaryHandler()
+  const DAY = 86400000
+  const jan1 = Date.UTC(2024, 0, 1)
+
+  await getDailySeries(ctx, jan1 + 9 * DAY, jan1 + 20 * DAY - 1, handler, 'powerW', 'UTC')
+  const full = await getDailySeries(ctx, jan1, Date.UTC(2024, 1, 1) - 1, handler, 'powerW', 'UTC')
+
+  t.is(Object.keys(full).length, 31, 'the full month is fetched, not answered with the earlier 11-day slice')
+})
+
+test('getDailySeries - a cached whole month is clamped to the requested days', async (t) => {
+  const ctx = {}
+  const handler = hourlyJanuaryHandler()
+  const DAY = 86400000
+  const jan1 = Date.UTC(2024, 0, 1)
+
+  await getDailySeries(ctx, jan1, Date.UTC(2024, 1, 1) - 1, handler, 'powerW', 'UTC')
+  const partial = await getDailySeries(ctx, jan1 + 9 * DAY, jan1 + 20 * DAY - 1, handler, 'powerW', 'UTC')
+
+  t.alike(Object.keys(partial).map(Number), Array.from({ length: 11 }, (_, i) => jan1 + (9 + i) * DAY),
+    'only Jan 10-20, not the rest of the cached month')
 })
 
 test('getDailySeries - a different ctx gets its own cache (no cross-request leakage)', async (t) => {
@@ -637,7 +669,7 @@ test('processEbitdaPrices - processes valid data', (t) => {
   const results = [
     [{ prices: [{ ts: 1700006400000, price: 40000 }] }]
   ]
-  const daily = processEbitdaPrices(results)
+  const daily = processEbitdaPrices(results, 'UTC')
   t.ok(typeof daily === 'object', 'should return object')
   t.pass()
 })
@@ -649,7 +681,7 @@ test('processEbitdaPrices - flat per-ork items with priceUSD (production shape)'
       { ts: 1700092800000, priceUSD: 41500 }
     ]
   ]
-  const daily = processEbitdaPrices(results)
+  const daily = processEbitdaPrices(results, 'UTC')
   t.is(daily[1700006400000], 40000, 'should extract priceUSD for first day')
   t.is(daily[1700092800000], 41500, 'should extract priceUSD for second day')
   t.pass()
@@ -1262,7 +1294,7 @@ test('processNetworkHashrateData - processes array data', (t) => {
     [{ data: [{ ts: 1700006400000, avgHashrateMHs: 500000000000000 }] }]
   ]
 
-  const daily = processNetworkHashrateData(results)
+  const daily = processNetworkHashrateData(results, 'UTC')
   t.ok(typeof daily === 'object', 'should return object')
   t.ok(Object.keys(daily).length > 0, 'should have entries')
   const key = Object.keys(daily)[0]
@@ -1277,7 +1309,7 @@ test('processNetworkHashrateData - flat per-ork items (production shape)', (t) =
       { ts: 1700092800000, avgHashrateMHs: 1029591824888537 }
     ]
   ]
-  const daily = processNetworkHashrateData(results)
+  const daily = processNetworkHashrateData(results, 'UTC')
   t.is(daily[1700006400000], 1019725948656278, 'extracts avgHashrateMHs day 1')
   t.is(daily[1700092800000], 1029591824888537, 'extracts avgHashrateMHs day 2')
   t.pass()
@@ -1288,7 +1320,7 @@ test('processNetworkHashrateData - processes object-keyed data', (t) => {
     [{ data: { 1700006400000: { avgHashrateMHs: 500000000000000 } } }]
   ]
 
-  const daily = processNetworkHashrateData(results)
+  const daily = processNetworkHashrateData(results, 'UTC')
   t.ok(typeof daily === 'object', 'should return object')
   t.ok(Object.keys(daily).length > 0, 'should have entries')
   t.pass()
@@ -1296,7 +1328,7 @@ test('processNetworkHashrateData - processes object-keyed data', (t) => {
 
 test('processNetworkHashrateData - handles error results', (t) => {
   const results = [{ error: 'timeout' }]
-  const daily = processNetworkHashrateData(results)
+  const daily = processNetworkHashrateData(results, 'UTC')
   t.is(Object.keys(daily).length, 0, 'should be empty for errors')
   t.pass()
 })
@@ -1396,23 +1428,22 @@ test('getRevenueHourly - queries the pool with aggrHourly and shapes the log', a
   t.pass()
 })
 
-test('getRevenueHourly - timezone param converts start/end before querying', async (t) => {
+test('getRevenueHourly - timezone param never reinterprets start/end', async (t) => {
   let payload = null
   const mockCtx = withDataProxy({
     conf: { orks: [{ rpcPublicKey: 'k' }] },
     net_r0: { jRequest: async (key, method, p) => { payload = p; return [] } }
   })
 
-  const localStart = Date.UTC(2026, 5, 1, 0, 0, 0)
-  const localEnd = Date.UTC(2026, 5, 1, 1, 0, 0)
+  const start = Date.UTC(2026, 5, 1, 0, 0, 0)
+  const end = Date.UTC(2026, 5, 1, 1, 0, 0)
 
   await getRevenueHourly(mockCtx, {
-    query: { start: localStart, end: localEnd, timezone: 'America/Campo_Grande' }
+    query: { start, end, timezone: 'America/Campo_Grande' }
   })
 
-  // America/Campo_Grande is UTC-4 with no DST, so local midnight is 04:00 UTC.
-  t.is(payload.query.start, localStart + 4 * 3600000, 'should shift start to real UTC')
-  t.is(payload.query.end, localEnd + 4 * 3600000, 'should shift end to real UTC')
+  t.is(payload.query.start, start, 'start is a true UTC instant, same as export')
+  t.is(payload.query.end, end, 'end is a true UTC instant, same as export')
   t.pass()
 })
 
@@ -1757,7 +1788,7 @@ test('processDailyRevenueBtc - prefers changed_balance and falls back to satoshi
         ]
       }
     ]
-  ], JAN_1, JAN_31)
+  ], JAN_1, JAN_31, 'UTC')
   t.is(daily[JAN_10], 1, 'should sum 0.5 BTC + 0.5 BTC')
   t.pass()
 })
@@ -1769,15 +1800,9 @@ test('processDailyAvgPrices - averages price points within a day', (t) => {
       { ts: JAN_10 + 3600000, priceUSD: 110000 },
       { ts: JAN_31 + DAY_MS, priceUSD: 500 }
     ]
-  ], JAN_1, JAN_31)
+  ], JAN_1, JAN_31, 'UTC')
   t.is(daily[JAN_10], 100000, 'should average intra-day prices')
   t.absent(daily[JAN_31 + DAY_MS], 'should drop out-of-range days')
-  t.pass()
-})
-
-test('getStartOfMonthUtc - buckets to UTC month start', (t) => {
-  t.is(getStartOfMonthUtc(JAN_10), JAN_1)
-  t.is(getStartOfMonthUtc(JAN_1), JAN_1)
   t.pass()
 })
 
