@@ -35,6 +35,7 @@ const {
   localMonthStart
 } = require('../../../workers/lib/server/handlers/finance.handlers')
 const { getConsumption } = require('../../../workers/lib/server/handlers/metrics.handlers')
+const { priceBucket } = require('../../../workers/lib/server/handlers/finance.utils')
 const { withDataProxy } = require('../helpers/mockHelpers')
 
 // ==================== Energy Balance Tests ====================
@@ -492,6 +493,88 @@ test('getEnergyBalance monthly - rates use MEAN, totals use SUM, per-MW is RECOM
   t.ok(Math.abs(m.energyRevenueBTC_MW - 0.3) < 1e-9, 'BTC per-MW recomputed')
 })
 
+// A day holding several payouts at different times, with the mempool worker
+// serving a price per 5-minute bucket. `bucketPrices` maps bucket ts -> price;
+// anything absent models a bucket the server-side backfill has not reached yet.
+function makeReceiptPricedCtx (dayTs, payouts, bucketPrices, dailyPrice) {
+  return withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (_key, method, payload) => {
+        if (method === 'tailLog') {
+          return [{ ts: dayTs, site_power_w: 1_000_000, hashrate_mhs_5m_sum_aggr: 100 }]
+        }
+        if (method === 'getWrkExtData') {
+          const key = payload.query && payload.query.key
+          if (key === 'transactions') {
+            return [{ ts: dayTs, transactions: payouts.map(p => ({ ts: p.ts, changed_balance: p.btc })) }]
+          }
+          if (key === 'HISTORICAL_PRICES') return [{ ts: dayTs, priceUSD: dailyPrice }]
+          if (key === 'current_price') return [{ currentPrice: dailyPrice }]
+          if (key === 'PRICE_AT_TIMESTAMPS') {
+            const prices = {}
+            for (const ts of payload.query.timestamps) {
+              if (bucketPrices[ts]) prices[ts] = bucketPrices[ts]
+            }
+            // Array-wrapped, as the ork actually replies: it wraps each rack's
+            // object reply and concatenates across racks.
+            return [{ prices, missing: payload.query.timestamps.filter(ts => !bucketPrices[ts]) }]
+          }
+          if (key === 'stats-history') return []
+        }
+        if (method === 'getGlobalConfig') return { nominalPowerAvailability_MW: 10 }
+        return {}
+      }
+    },
+    globalDataLib: { getGlobalData: async () => [] }
+  })
+}
+
+test('getRevenueSummary values same-day payouts at the price each one arrived at', async (t) => {
+  const day = Date.UTC(2024, 0, 15)
+  const morning = day + 30 * 60 * 1000
+  const evening = day + 22 * 60 * 60 * 1000
+  const payouts = [{ ts: morning, btc: 1 }, { ts: evening, btc: 1 }]
+  const bucketPrices = {
+    [priceBucket(morning)]: 30000,
+    [priceBucket(evening)]: 50000
+  }
+
+  const result = await getRevenueSummary(
+    makeReceiptPricedCtx(day, payouts, bucketPrices, 99999),
+    { query: { start: day - 1000, end: day + 86400000, period: 'daily' } },
+    {}
+  )
+
+  const entry = result.log[0]
+  t.is(entry.revenueUSD, 80000, 'each payout valued at its own moment, not one daily price')
+  t.is(entry.btcPrice, 40000, 'the reported price is the blend actually realised')
+  t.is(entry.unpricedPayouts, 0)
+  t.is(result.summary.pricingComplete, true)
+  t.is(result.summary.missingPriceBuckets, 0)
+})
+
+test('getRevenueSummary flags the range when a payout had no recorded price', async (t) => {
+  const day = Date.UTC(2024, 0, 15)
+  const morning = day + 30 * 60 * 1000
+  const evening = day + 22 * 60 * 60 * 1000
+  const payouts = [{ ts: morning, btc: 1 }, { ts: evening, btc: 1 }]
+  // Only the morning bucket was ever recorded.
+  const bucketPrices = { [priceBucket(morning)]: 30000 }
+
+  const result = await getRevenueSummary(
+    makeReceiptPricedCtx(day, payouts, bucketPrices, 50000),
+    { query: { start: day - 1000, end: day + 86400000, period: 'daily' } },
+    {}
+  )
+
+  const entry = result.log[0]
+  t.is(entry.revenueUSD, 80000, 'the unpriced payout keeps the previous daily-price behaviour')
+  t.is(entry.unpricedPayouts, 1)
+  t.is(result.summary.pricingComplete, false, 'the response says so rather than hiding the fallback')
+  t.is(result.summary.missingPriceBuckets, 1)
+})
+
 test('getRevenueSummary monthly - rates use MEAN, totals use SUM', async (t) => {
   const day1 = Date.UTC(2024, 0, 15)
   const day2 = Date.UTC(2024, 0, 16)
@@ -550,6 +633,59 @@ test('getRevenueSummary monthly - a missing hashrate day does not drag the mean 
 
   t.is(result.log.length, 1, 'three days collapse to one monthly bucket')
   t.is(result.log[0].hashrateMhs, 200, 'mean over the two days that reported: (100+300)/2')
+})
+
+test('getRevenueSummary - miningConsumptionMWh sums only the DCS rack meters, null where unmetered', async (t) => {
+  const day1 = Date.UTC(2024, 0, 15)
+  const day2 = Date.UTC(2024, 0, 16)
+  const ctx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }], featureConfig: { centralDCSSetup: { enabled: true } } },
+    net_r0: {
+      jRequest: async (_key, method, payload) => {
+        if (method === 'listThings') {
+          return [{
+            type: payload.fields.type && 'dcs-siemens',
+            last: {
+              snap: {
+                stats: {
+                  dcs_specific: {
+                    equipment: {
+                      power_meters: [
+                        { equipment: 'Site-PM', role: 'site_main' },
+                        { equipment: 'QGBT-01', role: 'rack' },
+                        { equipment: 'QDFL-1P', role: 'rack' },
+                        { equipment: 'CCM', role: 'ccm_principal' }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }]
+        }
+        if (method === 'tailLog' && payload.aggrFields.by_meter_power_w) {
+          return [
+            { ts: day1, by_meter_power_w: { 'site-pm': 9_000_000, 'qgbt-01': 2_000_000, 'qdfl-1_p': 1_000_000, ccm: 5_000_000 } },
+            { ts: day2, by_meter_power_w: {} }
+          ]
+        }
+        if (method === 'tailLog') return [{ ts: day1, site_power_w: 9_000_000 }, { ts: day2, site_power_w: 9_000_000 }]
+        return []
+      }
+    },
+    globalDataLib: { getGlobalData: async () => [] }
+  })
+  const query = { start: day1, end: day2 + 86400000 - 1 }
+
+  const daily = await getRevenueSummary(ctx, { query: { ...query, period: 'daily' } }, {})
+  t.is(daily.log[0].consumptionMWh, 216, 'site consumption is unchanged')
+  t.is(daily.log[0].miningConsumptionMWh, 72, 'rack meters only: (2 + 1) MW x 24h')
+  t.is(daily.log[1].miningConsumptionMWh, null, 'a day without rack readings is unknown, not 0')
+  t.is(daily.summary.totalMiningConsumptionMWh, 72)
+
+  const unmetered = await getRevenueSummary(ctx, { query: { start: day2, end: query.end, period: 'monthly' } }, {})
+  t.is(unmetered.log[0].miningConsumptionMWh, null, 'a month without rack readings is unknown, not 0')
+  t.is(unmetered.summary.totalMiningConsumptionMWh, null)
 })
 
 test('getCostSummary - central DCS reads site power from the DCS worker', async (t) => {

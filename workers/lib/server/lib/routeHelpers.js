@@ -19,21 +19,39 @@ function createAuthHandler (ctx, handler) {
   }
 }
 
+// Opt-out marker for routes any logged-in user may call; the handler may check further.
+const AUTH_ONLY = Symbol('AUTH_ONLY')
+
+/**
+ * Wraps the perms check so every route must name its permissions: an array,
+ * a (req) => perms function, or AUTH_ONLY. Omitting them fails at registration.
+ * @param {Object} ctx - Context object
+ * @param {Array|Function|Symbol} perms - Required permissions
+ * @param {Function} isWrite - (req) => whether to check at write level
+ * @returns {Function} onRequest handler
+ */
+function createPermsOnRequest (ctx, perms, isWrite) {
+  if (perms !== AUTH_ONLY && !Array.isArray(perms) && typeof perms !== 'function') {
+    throw new Error('ERR_ROUTE_PERMS_REQUIRED')
+  }
+  return async (req, rep) => {
+    await authCheck(ctx, req, rep)
+    const required = typeof perms === 'function' ? perms(req) : perms
+    if (required !== AUTH_ONLY && !ctx.noAuth) {
+      await capCheck(ctx, req, rep, required, isWrite(req))
+    }
+  }
+}
+
 /**
  * Creates an authenticated route.
  * GET/HEAD requests are checked at read level, all other methods at write level.
  * @param {Object} ctx - Context object
- * @param {Array} perms - Optional permissions
+ * @param {Array|Function|Symbol} perms - Required permissions
  * @returns {Function} onRequest handler
  */
-function createAuthOnRequest (ctx, perms = null) {
-  return async (req, rep) => {
-    await authCheck(ctx, req, rep)
-    if (perms && !ctx.noAuth) {
-      const write = !READ_METHODS.includes(req.method)
-      await capCheck(ctx, req, rep, perms, write)
-    }
-  }
+function createAuthOnRequest (ctx, perms) {
+  return createPermsOnRequest(ctx, perms, req => !READ_METHODS.includes(req.method))
 }
 
 /**
@@ -42,20 +60,17 @@ function createAuthOnRequest (ctx, perms = null) {
  * an async job, passing a body) but do not mutate anything the caller owns —
  * e.g. requesting a miner log archive.
  * @param {Object} ctx - Context object
- * @param {Array} perms - Optional permissions
+ * @param {Array|Function|Symbol} perms - Required permissions
  * @returns {Function} onRequest handler
  */
-function createReadAuthOnRequest (ctx, perms = null) {
-  return async (req, rep) => {
-    await authCheck(ctx, req, rep)
-    if (perms && !ctx.noAuth) {
-      await capCheck(ctx, req, rep, perms, false)
-    }
-  }
+function createReadAuthOnRequest (ctx, perms) {
+  return createPermsOnRequest(ctx, perms, () => false)
 }
 
 /**
- * Creates a cached route handler
+ * Creates a cached route handler. A keyParts function may return null to
+ * bypass the cache for that request (e.g. keys that embed caller-supplied
+ * timestamps and would never be requested again).
  * @param {Object} ctx - Context object
  * @param {Array|Function} keyParts - Cache key parts or function to generate them
  * @param {string} endpoint - Endpoint path
@@ -65,6 +80,10 @@ function createReadAuthOnRequest (ctx, perms = null) {
 function createCachedHandler (ctx, keyParts, endpoint, handler) {
   return async (req, rep) => {
     const key = typeof keyParts === 'function' ? keyParts(req) : keyParts
+    if (!key) {
+      const result = await handler(ctx, req, rep)
+      return send200(rep, result)
+    }
     const handlerFunc = () => handler(ctx, req, rep)
     const result = await cachedRoute(ctx, key, endpoint, handlerFunc, !!req.query.overwriteCache)
     return send200(rep, result)
@@ -75,10 +94,10 @@ function createCachedHandler (ctx, keyParts, endpoint, handler) {
  * Creates a simple authenticated route
  * @param {Object} ctx - Context object
  * @param {Function} handler - Handler function (ctx, req, rep)
- * @param {Array} perms - Optional permissions array
+ * @param {Array|Function|Symbol} perms - Required permissions
  * @returns {Object} Route configuration
  */
-function createAuthRoute (ctx, handler, perms = null) {
+function createAuthRoute (ctx, handler, perms) {
   return {
     onRequest: createAuthOnRequest(ctx, perms),
     handler: createAuthHandler(ctx, handler)
@@ -91,10 +110,10 @@ function createAuthRoute (ctx, handler, perms = null) {
  * @param {Array|Function} keyParts - Cache key parts or function to generate them
  * @param {string} endpoint - Endpoint path
  * @param {Function} handler - Handler function (ctx, req, rep)
- * @param {Array} perms - Optional permissions array
+ * @param {Array|Function|Symbol} perms - Required permissions
  * @returns {Object} Route configuration
  */
-function createCachedAuthRoute (ctx, keyParts, endpoint, handler, perms = null) {
+function createCachedAuthRoute (ctx, keyParts, endpoint, handler, perms) {
   return {
     onRequest: createAuthOnRequest(ctx, perms),
     handler: createCachedHandler(ctx, keyParts, endpoint, handler)
@@ -118,6 +137,7 @@ function rejectTimezone (allows = () => false) {
 }
 
 module.exports = {
+  AUTH_ONLY,
   rejectTimezone,
   createAuthHandler,
   createAuthOnRequest,

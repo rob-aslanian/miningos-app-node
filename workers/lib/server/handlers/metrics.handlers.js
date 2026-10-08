@@ -16,7 +16,9 @@ const {
   SPARE_PART_TYPES,
   sparePartTag,
   SITE_STATUS_LIVE_WINDOW_MS,
-  ELECTRICITY_EXT_DATA_KEYS
+  ELECTRICITY_EXT_DATA_KEYS,
+  MINERPOOL_EXT_DATA_KEYS,
+  POOL_HASHRATE_INTERVALS_MS
 } = require('../../constants')
 const {
   getStartOfDay,
@@ -2166,7 +2168,9 @@ function indexForecastDecisionsByHour (forecastResults) {
         const notMining = item.manualOverrideMine === true
           ? false
           : item.decision !== 'mine'
-        const availableMw = Number(item.availableMw)
+        // hours without a power input carry availableMw: null, which is "no
+        // input" (fall back to the legacy flag), not an explicit 0 MW
+        const availableMw = typeof item.availableMw === 'number' ? item.availableMw : NaN
         const availableW = Number.isFinite(availableMw) && availableMw >= 0
           ? availableMw * 1e6
           : normalizeAvailability(item) === 0 ? 0 : null
@@ -2177,13 +2181,16 @@ function indexForecastDecisionsByHour (forecastResults) {
   return byHour
 }
 
-// Splits each hour's shortfall against nominal capacity into three buckets:
-// curtailment is the energy that was never available (nominal minus the
-// power-production input), energy sold is the available energy routed to the
-// grid on a not-mining hour, and whatever shortfall is left is operational.
-// Hours without a forecast entry count as 'mine' at full availability, so an
-// unexplained shortfall surfaces as an operational issue rather than being
-// hidden as curtailment.
+// Splits each hour's downtime into three buckets: curtailment is the energy
+// that was never available (nominal minus the power-production input, as a
+// share of nominal), energy sold is the available energy routed to the grid
+// on a not-mining hour, and the operational rate on a mining hour is the gap
+// between the hour's available energy and the metered draw, as a share of the
+// available energy — mining is assumed to take the full production, so this
+// bucket can exceed the nominal-based downtime when more than nominal was
+// available. Hours without a forecast entry count as 'mine' at full
+// availability, so an unexplained shortfall surfaces as an operational issue
+// rather than being hidden as curtailment.
 function buildHourlyDowntime (entries, nominalPowerW, decisionByHour) {
   return entries.map(val => {
     const ts = parseEntryTs(val.ts)
@@ -2210,7 +2217,9 @@ function buildHourlyDowntime (entries, nominalPowerW, decisionByHour) {
       energySoldRate = hour?.notMining && availableW > 0
         ? Math.min(availableW / nominalPowerW, downtimeRate - curtailmentRate)
         : 0
-      operationalIssuesRate = Math.max(0, downtimeRate - curtailmentRate - energySoldRate)
+      operationalIssuesRate = !hour?.notMining && availableW > 0
+        ? Math.max(0, availableW - powerW) / availableW
+        : Math.max(0, downtimeRate - curtailmentRate - energySoldRate)
     }
 
     return {
@@ -2328,6 +2337,87 @@ async function getDowntime (ctx, req) {
   return { log, summary }
 }
 
+// Serves the dashboard hash-rate chart's per-pool series, which the UI used to
+// assemble client-side by paginating 30-90 days of raw 5-min stats-history
+// rows through /auth/ext-data. Buckets are floor-aligned and hashrate is
+// averaged across every stats entry of a poolType in the bucket - deliberately
+// the same semantics the chart's downsampling produced, so the swap is not a
+// visual change. stats entries are per account and orks report disjoint racks,
+// so a multi-account pool (or one spread over orks) plots the per-account
+// average, not the pool total; balance-history-style avg-per-account-then-sum
+// would change the plotted numbers and is left as a deliberate follow-up.
+// Values stay in H/s; the UI converts.
+function bucketPoolHashrate (results, intervalMs) {
+  const buckets = new Map()
+
+  for (const windowRes of results) {
+    for (const orkRows of windowRes) {
+      if (!Array.isArray(orkRows)) continue
+      for (const row of orkRows) {
+        const ts = Number(row?.ts)
+        if (!Number.isFinite(ts) || !Array.isArray(row.stats)) continue
+
+        const bucketTs = Math.floor(ts / intervalMs) * intervalMs
+        let pools = buckets.get(bucketTs)
+        if (!pools) {
+          pools = new Map()
+          buckets.set(bucketTs, pools)
+        }
+
+        for (const stat of row.stats) {
+          if (!stat?.poolType) continue
+          const acc = pools.get(stat.poolType) || { sum: 0, count: 0 }
+          acc.sum += stat.hashrate || 0
+          acc.count++
+          pools.set(stat.poolType, acc)
+        }
+      }
+    }
+  }
+
+  return [...buckets.entries()]
+    .sort(([tsA], [tsB]) => tsA - tsB)
+    .map(([ts, pools]) => ({
+      ts,
+      stats: [...pools.entries()].map(([poolType, { sum, count }]) => ({
+        poolType,
+        hashrate: sum / count
+      }))
+    }))
+}
+
+async function getPoolHashrate (ctx, req) {
+  const intervalMs = POOL_HASHRATE_INTERVALS_MS[req.query.interval]
+  const end = Date.now()
+  const start = end - req.query.lookbackDays * METRICS_TIME.ONE_DAY_MS
+
+  // The pool workers stream the whole start..end range in one response, so
+  // split long lookbacks into week-sized windows to keep each RPC well under
+  // the proxy timeout. Windows are inclusive on both ends worker-side, hence
+  // the -1ms so rows on the seam are not fetched twice.
+  const windows = []
+  for (let windowStart = start; windowStart < end; windowStart += METRICS_TIME.SEVEN_DAYS_MS) {
+    windows.push({
+      start: windowStart,
+      end: Math.min(windowStart + METRICS_TIME.SEVEN_DAYS_MS - 1, end)
+    })
+  }
+
+  const results = await Promise.all(windows.map((window) =>
+    ctx.dataProxy.requestDataMap(RPC_METHODS.GET_WRK_EXT_DATA, {
+      type: WORKER_TYPES.MINERPOOL,
+      query: {
+        key: MINERPOOL_EXT_DATA_KEYS.STATS_HISTORY,
+        start: window.start,
+        end: window.end,
+        fields: { ts: 1, 'stats.poolType': 1, 'stats.hashrate': 1 }
+      }
+    })
+  ))
+
+  return { log: bucketPoolHashrate(results, intervalMs) }
+}
+
 module.exports = {
   wantsMonthlyRollup,
   ...require('../../metrics.utils'),
@@ -2381,5 +2471,7 @@ module.exports = {
   indexForecastDecisionsByHour,
   buildHourlyDowntime,
   aggregateDowntimeDaily,
-  calculateDowntimeSummary
+  calculateDowntimeSummary,
+  getPoolHashrate,
+  bucketPoolHashrate
 }

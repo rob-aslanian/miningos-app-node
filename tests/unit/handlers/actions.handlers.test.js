@@ -262,6 +262,77 @@ test('pushAction - with valid permissions', async (t) => {
   t.pass()
 })
 
+test('pushAction - setupPools rejects a raw config payload in place of poolConfigId', async (t) => {
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    authLib: {
+      getTokenPerms: async () => ({ write: true, permissions: ['actions:write'] })
+    },
+    net_r0: {
+      jRequest: async (key, method, payload, opts) => {
+        return { id: 'new-action', success: true }
+      }
+    }
+  })
+
+  const mockReq = {
+    _info: {
+      authToken: 'token123',
+      user: { metadata: { email: 'test@example.com' } }
+    },
+    body: {
+      query: { status: 'pending' },
+      action: 'setupPools',
+      params: [{
+        config: {
+          id: 'attacker-config',
+          poolUrls: [{ url: 'stratum://evil.example.com:3333', workerName: 'w', workerPassword: 'p' }]
+        }
+      }]
+    }
+  }
+
+  try {
+    await pushAction(mockCtx, mockReq)
+    t.fail('should throw error')
+  } catch (err) {
+    t.is(err.message, 'ERR_RAW_CONFIG_NOT_ALLOWED', 'should reject a raw config bypassing poolConfigId approval')
+  }
+})
+
+test('pushAction - setupPools with a poolConfigId passes params through unchanged', async (t) => {
+  let capturedPayload = null
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    authLib: {
+      getTokenPerms: async () => ({ write: true, permissions: ['actions:write'] })
+    },
+    net_r0: {
+      jRequest: async (key, method, payload, opts) => {
+        capturedPayload = payload
+        return { id: 'new-action', success: true }
+      }
+    }
+  })
+
+  const mockReq = {
+    _info: {
+      authToken: 'token123',
+      user: { metadata: { email: 'test@example.com' } }
+    },
+    body: {
+      query: { status: 'pending' },
+      action: 'setupPools',
+      params: [{ poolConfigId: 'cfg-1' }]
+    }
+  }
+
+  const result = await pushAction(mockCtx, mockReq)
+
+  t.ok(Array.isArray(result), 'should return array')
+  t.alike(capturedPayload.params, [{ poolConfigId: 'cfg-1' }], 'params should pass through unchanged for a valid poolConfigId')
+})
+
 for (const action of ['registerConfig', 'updateConfig']) {
   test(`pushAction - ${action} resolves poolUrls to approved pool url/worker settings`, async (t) => {
     let capturedPayload = null
@@ -974,12 +1045,12 @@ test('voteAction - with valid permissions', async (t) => {
     authLib: {
       getTokenPerms: async () => ({
         write: true,
-        caps: ['actions:vote']
+        permissions: ['miner:r']
       })
     },
     net_r0: {
       jRequest: async (key, method, payload, opts) => {
-        return { success: true, vote: payload.approve }
+        return { success: true, vote: payload.approve, authPerms: payload.authPerms }
       }
     }
   })
@@ -997,6 +1068,7 @@ test('voteAction - with valid permissions', async (t) => {
 
   t.ok(Array.isArray(result), 'should return array')
   t.ok(result[0].res.success === true, 'should return successful vote')
+  t.alike(result[0].res.authPerms, ['miner:r'], 'should forward level-bearing permissions')
 
   t.pass()
 })

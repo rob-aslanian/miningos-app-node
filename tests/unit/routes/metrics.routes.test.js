@@ -16,6 +16,7 @@ test('metrics routes - route definitions', (t) => {
 
   const routeUrls = routes.map(route => route.url)
   t.ok(routeUrls.includes('/auth/metrics/hashrate'), 'should have hashrate route')
+  t.ok(routeUrls.includes('/auth/metrics/pool-hashrate'), 'should have pool-hashrate route')
   t.ok(routeUrls.includes('/auth/metrics/consumption'), 'should have consumption route')
   t.ok(routeUrls.includes('/auth/metrics/efficiency'), 'should have efficiency route')
   t.ok(routeUrls.includes('/auth/metrics/miner-status'), 'should have miner-status route')
@@ -66,6 +67,7 @@ const runPreValidation = (route, query) => {
 test('metrics routes - timezone is declared only where it is used', (t) => {
   const routes = createRoutesForTest(ROUTES_PATH)
   const rejecting = [
+    '/auth/metrics/pool-hashrate',
     '/auth/metrics/consumption',
     '/auth/metrics/efficiency',
     '/auth/metrics/miner-status',

@@ -1,5 +1,7 @@
 'use strict'
 
+const { POOL_HASHRATE_INTERVALS_MS } = require('../../constants')
+
 // 1M is a 30-day month. Distinct from 1m (one minute) used by
 // powerModeTimeline / containerHistory.
 const METRICS_INTERVALS = ['1h', '1d', '1w', '1M']
@@ -111,6 +113,18 @@ const schemas = {
         overwriteCache: { type: 'boolean' }
       },
       required: ['start', 'end']
+    },
+    // No start/end: the window is lookbackDays back from now, so the cache key
+    // stays a handful of interval:days combinations instead of a fresh entry
+    // per request timestamp.
+    poolHashrate: {
+      type: 'object',
+      properties: {
+        interval: { type: 'string', enum: Object.keys(POOL_HASHRATE_INTERVALS_MS) },
+        lookbackDays: { type: 'integer', minimum: 1, maximum: 90 },
+        overwriteCache: { type: 'boolean' }
+      },
+      required: ['interval', 'lookbackDays']
     },
     powerModeTimeline: {
       type: 'object',

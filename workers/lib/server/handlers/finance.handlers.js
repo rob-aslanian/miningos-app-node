@@ -23,8 +23,11 @@ const {
   extractCurrentPrice,
   processBlockData,
   historyLimit,
-  addRebates
+  priceDailyRevenue,
+  pricingStatus
 } = require('./finance.utils')
+const { getCombinedPoolRebates } = require('./rebates.utils')
+const { isCentralDCSEnabled, fetchDcsThing } = require('../../dcs.utils')
 
 // First instant of the local calendar month (in `timezone`) containing `ts`.
 function localMonthStart (ts, timezone) {
@@ -191,9 +194,16 @@ async function getEnergyBalance (ctx, req) {
       .then(r => cb(null, r)).catch(cb)
   ])
 
-  const dailyTransactions = addRebates(processTransactions(transactionResults, { start, end }, timezone), poolRebates, timezone)
+  const { txEntries } = processTransactions(transactionResults, { start, end }, timezone)
   const dailyPrices = processPriceData(priceResults, timezone)
   const currentBtcPrice = extractCurrentPrice(currentPriceResults)
+  const { daily: dailyTransactions, missingPriceBuckets } = await priceDailyRevenue(ctx, {
+    txEntries,
+    rebates: poolRebates,
+    dailyPrices,
+    currentBtcPrice,
+    timezone
+  })
   const costsByMonth = processCostsData(productionCosts)
   const dailyActiveEnergyIn = processEnergyData(activeEnergyInResults, AGGR_FIELDS.ACTIVE_ENERGY_IN, timezone)
   const dailyUteEnergy = processEnergyData(activeEnergyInResults, AGGR_FIELDS.UTE_ENERGY, timezone)
@@ -208,13 +218,13 @@ async function getEnergyBalance (ctx, req) {
   for (const dayTs of [...allDays].sort()) {
     const ts = Number(dayTs)
     const transactions = dailyTransactions[dayTs] || {}
-    const btcPrice = dailyPrices[dayTs] || currentBtcPrice || 0
+    const btcPrice = transactions.btcPrice || dailyPrices[dayTs] || currentBtcPrice || 0
 
     const powerW = dailyConsumption[dayTs] || 0
     const powerMWh = (powerW * 24) / 1000000
     const sitePowerMW = powerW / 1000000
     const revenueBTC = transactions.revenueBTC || 0
-    const revenueUSD = revenueBTC * btcPrice
+    const revenueUSD = transactions.revenueUSD || 0
 
     const monthKey = localMonthKey(ts, timezone)
     const costs = costsByMonth[monthKey] || {}
@@ -259,7 +269,8 @@ async function getEnergyBalance (ctx, req) {
       curtailmentMWh,
       curtailmentRate,
       operationalIssuesRate,
-      powerUtilization
+      powerUtilization,
+      unpricedPayouts: transactions.unpricedPayouts || 0
     })
   }
 
@@ -279,7 +290,7 @@ async function getEnergyBalance (ctx, req) {
 
   const summary = calculateSummary(aggregated)
 
-  return { log: aggregated, summary }
+  return { log: aggregated, summary: { ...summary, ...pricingStatus(missingPriceBuckets) } }
 }
 
 function processPriceData (results, timezone) {
@@ -332,11 +343,7 @@ function processEnergyData (results, aggrField, timezone) {
 
 async function getPoolRebates (ctx, start, end) {
   if (!ctx.globalDataLib) return []
-  const rebates = await ctx.globalDataLib.getGlobalData({
-    type: GLOBAL_DATA_TYPES.POOL_REBATES,
-    range: { gte: start, lte: end }
-  })
-  return Array.isArray(rebates) ? rebates : []
+  return await getCombinedPoolRebates(ctx, { start, end })
 }
 
 function processForecastHistory (results, timezone) {
@@ -349,10 +356,10 @@ function processForecastHistory (results, timezone) {
         const ts = localDayStart(Number(h.start), timezone)
         const d = daily[ts] ??= { energySalesGrossUSD: 0, energySalesTaxesAndFeesUSD: 0, soldMWh: 0, availableMWh: 0, allMineNetUSD: 0, allSellNetUSD: 0, optimalNetUSD: 0 }
         const mwh = safeDiv(h.energySalesRevenue, h.energySalesRevenuePerMwh) || 0
-        const sellNet = h.energySalesRevenue - (h.energySalesTaxesAndFees || 0)
-        const mineNet = (h.miningRevenue || 0) - (h.taxesAndFees || 0)
-        if (h.isEnergySelected === true) {
-          d.energySalesGrossUSD += h.energySalesRevenue
+        const sellNet = h.energySalesRevenue || 0
+        const mineNet = h.miningRevenue || 0
+        if (h.isEnergySelected === true && h.decision !== 'mine') {
+          d.energySalesGrossUSD += h.energySellPrice || 0
           d.energySalesTaxesAndFeesUSD += h.energySalesTaxesAndFees || 0
           d.soldMWh += mwh
         }
@@ -504,9 +511,16 @@ async function getEbitda (ctx, req) {
       .then(r => cb(null, r)).catch(cb)
   ])
 
-  const dailyTransactions = addRebates(processTransactions(transactionResults, { start, end }, timezone), poolRebates, timezone)
+  const { txEntries } = processTransactions(transactionResults, { start, end }, timezone)
   const dailyPrices = processEbitdaPrices(priceResults, timezone)
   const currentBtcPrice = extractCurrentPrice(currentPriceResults)
+  const { daily: dailyTransactions, missingPriceBuckets } = await priceDailyRevenue(ctx, {
+    txEntries,
+    rebates: poolRebates,
+    dailyPrices,
+    currentBtcPrice,
+    timezone
+  })
   const costsByMonth = processCostsData(productionCosts)
 
   const allDays = new Set([
@@ -519,10 +533,10 @@ async function getEbitda (ctx, req) {
   for (const dayTs of [...allDays].sort()) {
     const ts = Number(dayTs)
     const transactions = dailyTransactions[dayTs] || {}
-    const btcPrice = dailyPrices[dayTs] || currentBtcPrice || 0
+    const btcPrice = transactions.btcPrice || dailyPrices[dayTs] || currentBtcPrice || 0
 
     const revenueBTC = transactions.revenueBTC || 0
-    const revenueUSD = revenueBTC * btcPrice
+    const revenueUSD = transactions.revenueUSD || 0
     const powerW = dailyPower[dayTs] || 0
     const hashrateMhs = dailyHashrate[dayTs] || 0
     const powerMWh = (powerW * 24) / 1000000
@@ -552,7 +566,8 @@ async function getEbitda (ctx, req) {
       totalCostsUSD,
       ebitdaSelling,
       ebitdaHodl,
-      btcProductionCost
+      btcProductionCost,
+      unpricedPayouts: transactions.unpricedPayouts || 0
     })
   }
 
@@ -563,7 +578,7 @@ async function getEbitda (ctx, req) {
   for (const entry of aggregated) entry.btcProductionCost = safeDiv(entry.totalCostsUSD, entry.revenueBTC)
   const summary = calculateEbitdaSummary(aggregated, currentBtcPrice)
 
-  return { log: aggregated, summary }
+  return { log: aggregated, summary: { ...summary, ...pricingStatus(missingPriceBuckets) } }
 }
 
 function processEbitdaPrices (results, timezone) {
@@ -804,7 +819,8 @@ async function getRevenue (ctx, req) {
     query
   })
 
-  const dailyRevenue = processTransactions(transactionResults, { trackFees: true, start, end }, timezone)
+  // BTC-denominated only, so it needs no per-payout USD pricing.
+  const { daily: dailyRevenue } = processTransactions(transactionResults, { trackFees: true, start, end }, timezone)
 
   const log = []
   for (const dayTs of Object.keys(dailyRevenue).sort()) {
@@ -907,6 +923,7 @@ async function getRevenueSummary (ctx, req) {
     priceResults,
     currentPriceResults,
     dailyPower,
+    dailyMiningPower,
     dailyHashrate,
     productionCosts,
     blockResults,
@@ -932,6 +949,9 @@ async function getRevenueSummary (ctx, req) {
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => getDailySeries(ctx, start, end, getConsumption, 'powerW', timezone)
+      .then(r => cb(null, r)).catch(cb),
+
+    (cb) => getDailySeries(ctx, start, end, getMiningConsumption, 'miningPowerW', timezone)
       .then(r => cb(null, r)).catch(cb),
 
     (cb) => getDailySeries(ctx, start, end, getHashrate, 'hashrateMhs', timezone)
@@ -960,7 +980,7 @@ async function getRevenueSummary (ctx, req) {
       start,
       end,
       includeDays: false,
-      forecastFields: { start: 1, energySalesRevenue: 1, energySalesRevenuePerMwh: 1, energySalesTaxesAndFees: 1, miningRevenue: 1, taxesAndFees: 1, isEnergySelected: 1 }
+      forecastFields: { start: 1, decision: 1, energySellPrice: 1, energySalesRevenue: 1, energySalesRevenuePerMwh: 1, energySalesTaxesAndFees: 1, miningRevenue: 1, taxesAndFees: 1, isEnergySelected: 1 }
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
@@ -969,9 +989,17 @@ async function getRevenueSummary (ctx, req) {
     }).then(r => cb(null, r)).catch(cb)
   ])
 
-  const dailyRevenue = addRebates(processTransactions(transactionResults, { trackFees: true, start, end }, timezone), poolRebates, timezone)
+  const { txEntries } = processTransactions(transactionResults, { trackFees: true, start, end }, timezone)
   const dailyPrices = processEbitdaPrices(priceResults, timezone)
   const currentBtcPrice = extractCurrentPrice(currentPriceResults)
+  const { daily: dailyRevenue, missingPriceBuckets } = await priceDailyRevenue(ctx, {
+    txEntries,
+    rebates: poolRebates,
+    dailyPrices,
+    currentBtcPrice,
+    timezone,
+    trackFees: true
+  })
   const costsByMonth = processCostsData(productionCosts)
   const dailyBlocks = processBlockData(blockResults, timezone)
   const nominalPowerMW = extractNominalPower(globalConfigResults)
@@ -993,13 +1021,13 @@ async function getRevenueSummary (ctx, req) {
     if (ts < start || ts > end) continue
 
     const revenue = dailyRevenue[dayTs] || {}
-    const btcPrice = dailyPrices[dayTs] || currentBtcPrice || 0
+    const btcPrice = revenue.btcPrice || dailyPrices[dayTs] || currentBtcPrice || 0
     const block = dailyBlocks[dayTs] || {}
 
     const revenueBTC = revenue.revenueBTC || 0
     const feesBTC = revenue.feesBTC || 0
-    const revenueUSD = revenueBTC * btcPrice
-    const feesUSD = feesBTC * btcPrice
+    const revenueUSD = revenue.revenueUSD || 0
+    const feesUSD = revenue.feesUSD || 0
 
     const powerW = dailyPower[dayTs] || 0
     const consumptionMWh = (powerW * 24) / 1000000
@@ -1039,6 +1067,7 @@ async function getRevenueSummary (ctx, req) {
       btcPrice,
       powerW,
       consumptionMWh,
+      ...(dayTs in dailyMiningPower && { miningConsumptionMWh: (dailyMiningPower[dayTs] * 24) / 1000000 }),
       hashrateMhs,
       energyCostsUSD,
       operationalCostsUSD,
@@ -1072,7 +1101,8 @@ async function getRevenueSummary (ctx, req) {
       allSellNetUSD: fc.allSellNetUSD || 0,
       optimalNetUSD: fc.optimalNetUSD || 0,
       miningNetUSD,
-      netCashUSD: miningNetUSD + energySalesNetUSD - totalCostsUSD
+      netCashUSD: miningNetUSD + energySalesNetUSD - totalCostsUSD,
+      unpricedPayouts: revenue.unpricedPayouts || 0
     })
   }
 
@@ -1084,10 +1114,13 @@ async function getRevenueSummary (ctx, req) {
     ],
     timezone
   })
-  for (const entry of aggregated) entry.btcProductionCost = safeDiv(entry.totalCostsUSD, entry.revenueBTC)
+  for (const entry of aggregated) {
+    entry.btcProductionCost = safeDiv(entry.totalCostsUSD, entry.revenueBTC)
+    entry.miningConsumptionMWh ??= null
+  }
   const summary = calculateDetailedRevenueSummary(aggregated, currentBtcPrice)
 
-  return { log: aggregated, summary }
+  return { log: aggregated, summary: { ...summary, ...pricingStatus(missingPriceBuckets) } }
 }
 
 function calculateDetailedRevenueSummary (log, currentBtcPrice) {
@@ -1114,6 +1147,7 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
       totalNetCashUSD: 0,
       totalCostsUSD: 0,
       totalConsumptionMWh: 0,
+      totalMiningConsumptionMWh: null,
       avgCostPerMWh: null,
       avgRevenuePerMWh: null,
       avgNetRevenuePerMWh: null,
@@ -1148,6 +1182,7 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
     acc.miningNetUSD += entry.miningNetUSD || 0
     acc.netCashUSD += entry.netCashUSD || 0
     acc.consumptionMWh += entry.consumptionMWh || 0
+    if (entry.miningConsumptionMWh != null) acc.miningConsumptionMWh = (acc.miningConsumptionMWh ?? 0) + entry.miningConsumptionMWh
     acc.ebitdaSelling += entry.ebitdaSelling || 0
     acc.ebitdaHodl += entry.ebitdaHodl || 0
     acc.btcPriceSum += entry.btcPrice || 0
@@ -1183,6 +1218,7 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
     miningNetUSD: 0,
     netCashUSD: 0,
     consumptionMWh: 0,
+    miningConsumptionMWh: null,
     ebitdaSelling: 0,
     ebitdaHodl: 0,
     btcPriceSum: 0,
@@ -1210,11 +1246,13 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
     totalAvailableMWh: totals.availableMWh,
     totalAllMineNetUSD: totals.allMineNetUSD,
     totalAllSellNetUSD: totals.allSellNetUSD,
+    totalAllSellNetUSDPerMWh: safeDiv(totals.allSellNetUSD, totals.availableMWh),
     totalOptimalNetUSD: totals.optimalNetUSD,
     totalMiningNetUSD: totals.miningNetUSD,
     totalNetCashUSD: totals.netCashUSD,
     totalCostsUSD: totals.costsUSD,
     totalConsumptionMWh: totals.consumptionMWh,
+    totalMiningConsumptionMWh: totals.miningConsumptionMWh,
     avgCostPerMWh: safeDiv(totals.costsUSD, totals.consumptionMWh),
     avgRevenuePerMWh: safeDiv(totals.revenueUSD, totals.consumptionMWh),
     avgNetRevenuePerMWh: safeDiv(totals.miningNetUSD, totals.consumptionMWh),
@@ -1264,9 +1302,16 @@ async function getHashRevenue (ctx, req) {
     }).then(r => cb(null, r)).catch(cb)
   ])
 
-  const dailyTransactions = processTransactions(transactionResults, { trackFees: true, start, end }, timezone)
+  const { txEntries } = processTransactions(transactionResults, { trackFees: true, start, end }, timezone)
   const dailyPrices = processEbitdaPrices(priceResults, timezone)
   const currentBtcPrice = extractCurrentPrice(currentPriceResults)
+  const { daily: dailyTransactions, missingPriceBuckets } = await priceDailyRevenue(ctx, {
+    txEntries,
+    dailyPrices,
+    currentBtcPrice,
+    timezone,
+    trackFees: true
+  })
   const dailyNetworkHashrate = processNetworkHashrateData(networkHashrateResults, timezone)
 
   const allDays = new Set([
@@ -1278,12 +1323,12 @@ async function getHashRevenue (ctx, req) {
   for (const dayTs of [...allDays].sort()) {
     const ts = Number(dayTs)
     const transactions = dailyTransactions[dayTs] || {}
-    const btcPrice = dailyPrices[dayTs] || currentBtcPrice || 0
+    const btcPrice = transactions.btcPrice || dailyPrices[dayTs] || currentBtcPrice || 0
 
     const revenueBTC = transactions.revenueBTC || 0
     const feesBTC = transactions.feesBTC || 0
-    const revenueUSD = revenueBTC * btcPrice
-    const feesUSD = feesBTC * btcPrice
+    const revenueUSD = transactions.revenueUSD || 0
+    const feesUSD = transactions.feesUSD || 0
     const hashrateMhs = dailyHashrate[dayTs] || 0
     const hashratePhs = hashrateMhs / 1e9
     const networkHashrateMhs = dailyNetworkHashrate[dayTs] || 0
@@ -1303,7 +1348,8 @@ async function getHashRevenue (ctx, req) {
       hashCostUSDPerPHsPerDay: safeDiv(feesUSD, hashratePhs),
       networkHashPriceBTCPerPHsPerDay: safeDiv(revenueBTC, networkHashratePhs),
       networkHashPriceUSDPerPHsPerDay: safeDiv(revenueUSD, networkHashratePhs),
-      networkHashrateMhs
+      networkHashrateMhs,
+      unpricedPayouts: transactions.unpricedPayouts || 0
     })
   }
 
@@ -1317,7 +1363,7 @@ async function getHashRevenue (ctx, req) {
   })
   const summary = calculateHashRevenueSummary(aggregated)
 
-  return { log: aggregated, summary }
+  return { log: aggregated, summary: { ...summary, ...pricingStatus(missingPriceBuckets) } }
 }
 
 function processNetworkHashrateData (results, timezone) {
@@ -1648,6 +1694,28 @@ function resolveLcoeUsdPerMwh (costParameters, monthKey) {
 function resolveEnergyCostsUSD (costs, consumptionMWh, lcoeUsdPerMwh) {
   if (costs.energyCostPerDay === null) return consumptionMWh * lcoeUsdPerMwh
   return costs.energyCostPerDay || 0
+}
+
+// by_meter_power_w keys are the DCS worker's snake-cased equipment ids (QDFL-1P -> qdfl-1_p).
+const meterKey = (id) => String(id).toLowerCase().replace(/[^a-z0-9]/g, '')
+
+// Mining power = the DCS "rack" power meters; hours without a rack reading are left unknown.
+async function getMiningConsumption (ctx, req) {
+  if (!isCentralDCSEnabled(ctx)) return { log: [] }
+
+  const [{ log }, dcsThing] = await Promise.all([
+    getConsumption(ctx, { ...req, query: { ...req.query, byMeter: true } }),
+    fetchDcsThing(ctx, { type: 1, 'last.snap.stats.dcs_specific.equipment.power_meters': 1 })
+  ])
+  const powerMeters = dcsThing?.last?.snap?.stats?.dcs_specific?.equipment?.power_meters || []
+  const rackMeters = new Set(powerMeters.filter(pm => pm.role === 'rack').map(pm => meterKey(pm.equipment)))
+
+  return {
+    log: log.map(({ ts, powerW }) => {
+      const rack = Object.entries(powerW).filter(([meter]) => rackMeters.has(meterKey(meter)))
+      return { ts, miningPowerW: rack.length ? rack.reduce((sum, [, w]) => sum + (Number(w) || 0), 0) : undefined }
+    })
+  }
 }
 
 module.exports = {

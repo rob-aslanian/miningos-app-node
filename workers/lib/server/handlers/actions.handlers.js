@@ -80,6 +80,16 @@ async function pushActionsBatch (ctx, req, rep) {
 
 const transformPushActionPayload = async (ctx, payload) => {
   switch (payload.action) {
+    case 'setupPools': {
+      // Pool config must always be resolved server-side from an approved poolConfigId.
+      // A raw `config` object here would skip the pool-config approval ceremony entirely.
+      const [params] = payload.params ?? []
+      if (params && Object.prototype.hasOwnProperty.call(params, 'config')) {
+        throw new Error('ERR_RAW_CONFIG_NOT_ALLOWED')
+      }
+      return payload
+    }
+
     case 'registerConfig':
     case 'updateConfig': {
       if (!payload || !Array.isArray(payload.params)) {
@@ -177,7 +187,7 @@ async function pushAction (ctx, req) {
 }
 
 async function voteAction (ctx, req) {
-  const { write, caps } = await ctx.authLib.getTokenPerms(req._info.authToken)
+  const { write, permissions } = await ctx.authLib.getTokenPerms(req._info.authToken)
   if (!write) {
     throw new Error('ERR_WRITE_PERM_REQUIRED')
   }
@@ -186,7 +196,7 @@ async function voteAction (ctx, req) {
     id: req.params.id,
     approve: req.body.approve,
     voter: req._info.user.metadata.email,
-    authPerms: caps
+    authPerms: permissions
   }
 
   return await ctx.dataProxy.requestData('voteAction', payload, (res, resultsArray) => {

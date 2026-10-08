@@ -10,6 +10,11 @@ const GLOBAL_DATA_TYPES = {
   POOL_REBATES: 'poolRebates'
 }
 
+const POOL_REBATE_SOURCES = {
+  AUTO: 'auto',
+  MANUAL: 'manual'
+}
+
 const LCOE_SOURCES = ['current', 'custom']
 
 const USER_SETTINGS_TYPE = 'userSettings'
@@ -18,7 +23,6 @@ const SUPER_ADMIN_ID = '1'
 const SUPER_ADMIN_ROLE = '*'
 
 const MIGRATED_USER_ROLES = {
-  DEFAULT: 'site_operator',
   READ_ONLY: 'read_only_user'
 }
 
@@ -185,6 +189,7 @@ const ENDPOINTS = {
 
   // Metrics endpoints
   METRICS_HASHRATE: '/auth/metrics/hashrate',
+  METRICS_POOL_HASHRATE: '/auth/metrics/pool-hashrate',
   METRICS_CONSUMPTION: '/auth/metrics/consumption',
   METRICS_EFFICIENCY: '/auth/metrics/efficiency',
   METRICS_MINER_STATUS: '/auth/metrics/miner-status',
@@ -785,6 +790,26 @@ const MINERPOOL_EXT_DATA_KEYS = {
   STATS: 'stats',
   STATS_HISTORY: 'stats-history',
   HASHRATE_HISTORY: 'hashrate-history'
+}
+
+const MEMPOOL_EXT_DATA_KEYS = {
+  POOL_REBATES: 'POOL_REBATES',
+  POOL_REBATES_UPDATE: 'POOL_REBATES_UPDATE',
+  POOL_REBATES_DELETE: 'POOL_REBATES_DELETE',
+  PRICE_AT_TIMESTAMPS: 'PRICE_AT_TIMESTAMPS'
+}
+
+// Payouts are valued at the BTC price recorded for the 5-minute bucket they
+// landed in. Must match the mempool worker's own bucket size.
+const PRICE_BUCKET_MS = 5 * 60 * 1000
+
+// Bucket sizes /auth/metrics/pool-hashrate serves; keys are the wire values of
+// its interval param. stats-history rows arrive every 5 min, so 5m is the floor.
+const POOL_HASHRATE_INTERVALS_MS = {
+  '5m': 5 * 60 * 1000,
+  '30m': 30 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '3h': 3 * 60 * 60 * 1000
 }
 
 const ELECTRICITY_EXT_DATA_KEYS = {
@@ -1408,6 +1433,8 @@ const CUSTOM_ALERT_CONFIG = {
 }
 
 const POOL_PROTOCOL = 'stratum+tcp'
+const LRU_BUCKETS = ['8s', '10s', '15s', '30s', '1m', '15m']
+const LRU_SWEEP_INTERVAL_MS = 30000
 
 module.exports = {
   SUPER_ADMIN_ROLE,
@@ -1451,6 +1478,10 @@ module.exports = {
   AGGR_FIELDS,
   PERIOD_TYPES,
   MINERPOOL_EXT_DATA_KEYS,
+  MEMPOOL_EXT_DATA_KEYS,
+  PRICE_BUCKET_MS,
+  POOL_REBATE_SOURCES,
+  POOL_HASHRATE_INTERVALS_MS,
   NON_METRIC_KEYS,
   BTC_SATS,
   RANGE_BUCKETS,
@@ -1519,5 +1550,7 @@ module.exports = {
   MINER_MODEL_DISPLAY_NAMES,
   MICROSOFT_AUTH_SCOPE,
   CUSTOM_ALERT_CONFIG,
-  POOL_PROTOCOL
+  POOL_PROTOCOL,
+  LRU_BUCKETS,
+  LRU_SWEEP_INTERVAL_MS
 }

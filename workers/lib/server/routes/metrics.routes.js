@@ -2,11 +2,13 @@
 
 const {
   ENDPOINTS,
-  HTTP_METHODS
+  HTTP_METHODS,
+  AUTH_PERMISSIONS
 } = require('../../constants')
 const {
   wantsMonthlyRollup,
   getHashrate,
+  getPoolHashrate,
   getConsumption,
   getEfficiency,
   getMinerStatus,
@@ -24,7 +26,7 @@ const {
 } = require('../handlers/metrics.handlers')
 const { getSiteLiveStatus } = require('../handlers/site.handlers')
 const { getRevenueHourly } = require('../handlers/finance.handlers')
-const { createCachedAuthRoute, rejectTimezone } = require('../lib/routeHelpers')
+const { createCachedAuthRoute, rejectTimezone, AUTH_ONLY } = require('../lib/routeHelpers')
 
 module.exports = (ctx) => {
   const schemas = require('../schemas/metrics.schemas.js')
@@ -57,7 +59,23 @@ module.exports = (ctx) => {
           req.query.reverse
         ],
         ENDPOINTS.METRICS_HASHRATE,
-        getHashrate
+        getHashrate,
+        AUTH_ONLY
+      )
+    },
+    {
+      method: HTTP_METHODS.GET,
+      url: ENDPOINTS.METRICS_POOL_HASHRATE,
+      schema: {
+        querystring: schemas.query.poolHashrate
+      },
+      preValidation: rejectTimezone(),
+      ...createCachedAuthRoute(
+        ctx,
+        (req) => ['metrics/pool-hashrate', req.query.interval, req.query.lookbackDays],
+        ENDPOINTS.METRICS_POOL_HASHRATE,
+        getPoolHashrate,
+        [AUTH_PERMISSIONS.MINERPOOL]
       )
     },
     {
@@ -79,7 +97,8 @@ module.exports = (ctx) => {
           req.query.racks
         ],
         ENDPOINTS.METRICS_CONSUMPTION,
-        getConsumption
+        getConsumption,
+        AUTH_ONLY
       )
     },
     {
@@ -100,7 +119,8 @@ module.exports = (ctx) => {
           req.query.racks
         ],
         ENDPOINTS.METRICS_EFFICIENCY,
-        getEfficiency
+        getEfficiency,
+        [AUTH_PERMISSIONS.REPORTING]
       )
     },
     {
@@ -119,7 +139,8 @@ module.exports = (ctx) => {
           req.query.groupBy
         ],
         ENDPOINTS.METRICS_MINER_STATUS,
-        getMinerStatus
+        getMinerStatus,
+        [AUTH_PERMISSIONS.REPORTING]
       )
     },
     {
@@ -132,7 +153,8 @@ module.exports = (ctx) => {
         ctx,
         () => ['metrics/miners/by-container'],
         ENDPOINTS.METRICS_MINERS_BY_CONTAINER,
-        getMinersByContainer
+        getMinersByContainer,
+        AUTH_ONLY
       )
     },
     {
@@ -145,7 +167,8 @@ module.exports = (ctx) => {
         ctx,
         () => ['metrics/site/summary'],
         ENDPOINTS.METRICS_SITE_SUMMARY,
-        getSiteLiveStatus
+        getSiteLiveStatus,
+        AUTH_ONLY
       )
     },
     {
@@ -158,7 +181,8 @@ module.exports = (ctx) => {
         ctx,
         () => ['metrics/inventory/summary'],
         ENDPOINTS.METRICS_INVENTORY_SUMMARY,
-        getInventorySummary
+        getInventorySummary,
+        [AUTH_PERMISSIONS.INVENTORY]
       )
     },
     {
@@ -171,7 +195,8 @@ module.exports = (ctx) => {
         ctx,
         () => ['metrics/miners/by-type'],
         ENDPOINTS.METRICS_MINERS_BY_TYPE,
-        getMinersByType
+        getMinersByType,
+        [AUTH_PERMISSIONS.REPORTING]
       )
     },
     {
@@ -184,7 +209,8 @@ module.exports = (ctx) => {
         ctx,
         () => ['metrics/inventory/miner-distribution'],
         ENDPOINTS.METRICS_INVENTORY_MINER_DISTRIBUTION,
-        getInventoryMinerDistribution
+        getInventoryMinerDistribution,
+        [AUTH_PERMISSIONS.INVENTORY]
       )
     },
     {
@@ -198,7 +224,8 @@ module.exports = (ctx) => {
         ctx,
         (req) => ['metrics/revenue/hourly', req.query.start, req.query.end, req.query.pool],
         ENDPOINTS.METRICS_REVENUE_HOURLY,
-        getRevenueHourly
+        getRevenueHourly,
+        [AUTH_PERMISSIONS.REVENUE]
       )
     },
     {
@@ -217,7 +244,8 @@ module.exports = (ctx) => {
           req.query.interval
         ],
         ENDPOINTS.METRICS_POWER_MODE,
-        getPowerMode
+        getPowerMode,
+        [AUTH_PERMISSIONS.MINER]
       )
     },
     {
@@ -237,7 +265,8 @@ module.exports = (ctx) => {
           req.query.container
         ],
         ENDPOINTS.METRICS_POWER_MODE_TIMELINE,
-        getPowerModeTimeline
+        getPowerModeTimeline,
+        AUTH_ONLY
       )
     },
     {
@@ -257,7 +286,8 @@ module.exports = (ctx) => {
           req.query.container
         ],
         ENDPOINTS.METRICS_TEMPERATURE,
-        getTemperature
+        getTemperature,
+        [AUTH_PERMISSIONS.MINER, AUTH_PERMISSIONS.CONTAINER]
       )
     },
     {
@@ -276,7 +306,8 @@ module.exports = (ctx) => {
           req.query.interval
         ],
         ENDPOINTS.METRICS_COOLING,
-        getCooling
+        getCooling,
+        [AUTH_PERMISSIONS.CONTAINER]
       )
     },
     {
@@ -295,7 +326,8 @@ module.exports = (ctx) => {
           req.query.timezone
         ],
         ENDPOINTS.METRICS_DOWNTIME,
-        getDowntime
+        getDowntime,
+        [AUTH_PERMISSIONS.REPORTING]
       )
     },
     {
@@ -316,7 +348,8 @@ module.exports = (ctx) => {
           req.query.limit
         ],
         ENDPOINTS.METRICS_CONTAINER_HISTORY,
-        getContainerHistory
+        getContainerHistory,
+        [AUTH_PERMISSIONS.CONTAINER]
       )
     },
     {
@@ -332,7 +365,8 @@ module.exports = (ctx) => {
           req.params.id
         ],
         ENDPOINTS.METRICS_CONTAINER_TELEMETRY,
-        getContainerTelemetry
+        getContainerTelemetry,
+        [AUTH_PERMISSIONS.CONTAINER]
       )
     }
   ]

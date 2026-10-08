@@ -27,7 +27,7 @@ It is honored on:
 These routes reject it with `400 ERR_TIMEZONE_UNSUPPORTED`:
 
 - `/auth/metrics/hashrate` (any request other than the 1M rollup above)
-- `/auth/metrics/consumption`, `/auth/metrics/efficiency`, `/auth/metrics/miner-status`
+- `/auth/metrics/consumption`, `/auth/metrics/efficiency`, `/auth/metrics/miner-status`, `/auth/metrics/pool-hashrate`
 - `/auth/metrics/revenue/hourly`, `/auth/metrics/power-mode`, `/auth/metrics/power-mode/timeline`
 - `/auth/metrics/temperature`, `/auth/metrics/cooling`, `/auth/metrics/containers/:id/history`
 - `/auth/tail-log`, `/auth/tail-log/multi`, `/auth/history-log`
