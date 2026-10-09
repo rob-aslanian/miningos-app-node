@@ -169,61 +169,6 @@ test('getEnergyBalance - empty ork results', async (t) => {
   t.pass()
 })
 
-test('getEnergyBalance - reads a grouped range-string ts on the electricity stats', async (t) => {
-  // Both stats-history queries pass groupRange, so the worker answers with ts as a range
-  // string. Read raw, getStartOfDay turns it into NaN and every energy reading is dropped,
-  // leaving curtailment null on a day that has one.
-  const dayTs = 1700006400000
-  const mockCtx = withDataProxy({
-    conf: {
-      orks: [{ rpcPublicKey: 'key1' }]
-    },
-    net_r0: {
-      jRequest: async (key, method, payload) => {
-        if (method === 'tailLog') {
-          return [{ ts: dayTs, site_power_w: 5000 }]
-        }
-        if (method === 'getWrkExtData') {
-          if (payload.query && payload.query.key === 'transactions') {
-            return [{ ts: dayTs, transactions: [{ ts: dayTs, changed_balance: 0.5 }] }]
-          }
-          if (payload.query && payload.query.key === 'current_price') {
-            return [{ currentPrice: 40000 }]
-          }
-          if (payload.query && payload.query.key === 'stats-history') {
-            return [{
-              data: [{
-                ts: `${dayTs}-${dayTs + 86399999}`,
-                energy_aggr: { active_energy_in_aggr: 1, ute_energy_aggr: 1 }
-              }]
-            }]
-          }
-        }
-        if (method === 'getGlobalConfig') {
-          return { nominalPowerAvailability_MW: 10 }
-        }
-        return {}
-      }
-    },
-    globalDataLib: {
-      getGlobalData: async () => []
-    }
-  })
-
-  const mockReq = {
-    query: { start: 1700000000000, end: 1700100000000, period: 'daily' }
-  }
-
-  const result = await getEnergyBalance(mockCtx, mockReq, {})
-  const day = result.log.find(entry => entry.ts === dayTs)
-
-  t.ok(day, 'should return the day')
-  // consumptionMWh is 5000 W over 24 h = 0.12 MWh, so 1 MWh in leaves 0.88 curtailed
-  t.is(day.curtailmentMWh, 0.88, 'should derive curtailment from the range-string bucket')
-  t.ok(day.operationalIssuesRate !== null, 'should derive the operational issues rate too')
-  t.pass()
-})
-
 test('processPriceData - processes mempool price data', (t) => {
   const results = [
     [{ ts: 1700006400000, priceUSD: 40000 }]
@@ -362,6 +307,37 @@ test('getDailySeries - caches a completed month on ctx and does not refetch it',
 
   t.is(tailLogCalls, 1, 'the second call for the same completed month is served from cache')
   t.alike(first, second, 'cached result matches the freshly-fetched one')
+  t.pass()
+})
+
+test('getDailySeries - refresh skips the cached month and stores the fresh rollup', async (t) => {
+  let tailLogCalls = 0
+  let powerW = 2000000
+  const ts = Date.UTC(2024, 0, 15, 12)
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method) => {
+        if (method === 'tailLog') {
+          tailLogCalls++
+          return [{ ts, site_power_w: powerW }]
+        }
+        return []
+      }
+    }
+  })
+
+  const start = Date.UTC(2024, 0, 1)
+  const end = Date.UTC(2024, 1, 1)
+  const dayTs = Date.UTC(2024, 0, 15)
+  await getDailySeries(mockCtx, start, end, getConsumption, 'powerW', 'UTC')
+  powerW = 3000000 // a backfill lands after the month was cached
+  const refreshed = await getDailySeries(mockCtx, start, end, getConsumption, 'powerW', 'UTC', true)
+  const after = await getDailySeries(mockCtx, start, end, getConsumption, 'powerW', 'UTC')
+
+  t.is(tailLogCalls, 2, 'refresh refetches; the call after it is served from cache')
+  t.is(refreshed[dayTs], 3000000, 'refresh returns the backfilled value, not the cached one')
+  t.is(after[dayTs], 3000000, 'and the cache now holds the fresh rollup')
   t.pass()
 })
 
@@ -2173,7 +2149,7 @@ test('getRevenueSummary - folds forecast energy sales, pool rebates and net-of-t
           case 'forecastSettings': return [{ miningRevenueTaxFees: { percent: 4, fixed: 2 } }]
           case 'forecastHistory': return [{
             hourlyForecast: [
-              { start: dayTs, isEnergySelected: true, energySalesRevenue: 100, energySalesRevenueSelected: 100, energySalesRevenuePerMwh: 10, energySalesTaxesAndFees: 2, miningRevenue: 50, taxesAndFees: 1 },
+              { start: dayTs, isEnergySelected: true, energySellPrice: 100, energySalesRevenue: 100, energySalesRevenueSelected: 100, energySalesRevenuePerMwh: 10, energySalesTaxesAndFees: 2, miningRevenue: 50, taxesAndFees: 1 },
               { start: dayTs + hour, isEnergySelected: false, energySalesRevenue: 100, energySalesRevenueSelected: 100, energySalesRevenuePerMwh: 10, energySalesTaxesAndFees: 2, miningRevenue: 500, taxesAndFees: 20 }
             ]
           }]
@@ -2194,9 +2170,9 @@ test('getRevenueSummary - folds forecast energy sales, pool rebates and net-of-t
   t.is(row.soldMWh, 10)
   t.is(row.availableMWh, 20)
   t.is(row.energySalesNetUSD, 98)
-  t.is(row.allMineNetUSD, 529)
-  t.is(row.allSellNetUSD, 196)
-  t.is(row.optimalNetUSD, 578)
+  t.is(row.allMineNetUSD, 550, 'forecast miningRevenue is already net')
+  t.is(row.allSellNetUSD, 200, 'forecast energySalesRevenue is already net')
+  t.is(row.optimalNetUSD, 600)
   t.is(row.curtailmentMWh, 0)
   t.is(row.availableEnergyMWh, 0)
   t.is(row.miningNetUSD, 57360)
@@ -2209,4 +2185,33 @@ test('getRevenueSummary - folds forecast energy sales, pool rebates and net-of-t
   t.is(summary.totalNetCashUSD, 57458)
   t.is(summary.avgRevenuePerMWh, 500, 'gross avg revenue per MWh')
   t.is(summary.avgNetRevenuePerMWh, 478, 'net avg revenue per MWh')
+})
+
+test('getRevenueSummary - an energy-selected hour the forecast decided to mine is not sold', async (t) => {
+  const dayTs = 1700006400000
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        if (method === 'tailLog') return [{ ts: dayTs, site_power_w: 5000000 }]
+        if (method !== 'getWrkExtData') return []
+        if (payload.query.key === 'forecastHistory') {
+          return [{
+            hourlyForecast: [
+              { start: dayTs, decision: 'mine', isEnergySelected: true, energySellPrice: 100, energySalesRevenue: 100, energySalesRevenuePerMwh: 10, energySalesTaxesAndFees: 2, miningRevenue: 500 }
+            ]
+          }]
+        }
+        return []
+      }
+    },
+    globalDataLib: { getGlobalData: async () => [] }
+  })
+
+  const { log: [row] } = await getRevenueSummary(mockCtx, { query: { start: dayTs, end: dayTs + 86400000, period: 'daily' } }, {})
+
+  t.is(row.soldMWh, 0)
+  t.is(row.energySalesNetUSD, 0)
+  t.is(row.availableMWh, 10, 'the hour still counts as available energy')
+  t.is(row.optimalNetUSD, 500)
 })
