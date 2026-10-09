@@ -692,3 +692,36 @@ test('priceDailyRevenue caps the bucket request on pathological ranges', async (
   t.is(queries[0][0], priceBucket(DAY + 5000 * PRICE_BUCKET_MS), 'newest buckets win the slots')
   t.is(missingPriceBuckets, 5001, 'everything unresolved is still reported honestly')
 })
+
+test('processTransactions - usernames filter keeps only the phase accounts', (t) => {
+  const results = [[{
+    transactions: [
+      { ts: Date.UTC(2026, 9, 1, 10), satoshis_net_earned: 100000000, username: 'addr1' },
+      { ts: Date.UTC(2026, 9, 1, 11), satoshis_net_earned: 50000000, username: 'addr2' },
+      { ts: Date.UTC(2026, 9, 1, 12), satoshis_net_earned: 25000000 }
+    ]
+  }]]
+
+  const all = processTransactions(results, {}, 'UTC')
+  t.is(Object.values(all.daily)[0].revenueBTC, 1.75, 'unscoped keeps summing everything')
+
+  const scoped = processTransactions(results, { usernames: new Set(['addr2']) }, 'UTC')
+  t.is(Object.values(scoped.daily)[0].revenueBTC, 0.5, 'only the phase account is counted')
+  t.is(scoped.txEntries.length, 1, 'untagged rows are excluded when a filter is set')
+})
+
+test('processTransactions - excludeUsernames drops the pool-only accounts, keeps the rest', (t) => {
+  const results = [[{
+    transactions: [
+      { ts: Date.UTC(2026, 9, 1, 10), satoshis_net_earned: 100000000, username: 'addr1' },
+      { ts: Date.UTC(2026, 9, 1, 11), satoshis_net_earned: 50000000, username: 'addr2' },
+      { ts: Date.UTC(2026, 9, 1, 12), satoshis_net_earned: 25000000 }
+    ]
+  }]]
+
+  const scoped = processTransactions(results, { excludeUsernames: new Set(['addr2']) }, 'UTC')
+  t.is(Object.values(scoped.daily)[0].revenueBTC, 1.25, 'excluded account is out, untagged rows stay')
+
+  const empty = processTransactions(results, { excludeUsernames: new Set() }, 'UTC')
+  t.is(Object.values(empty.daily)[0].revenueBTC, 1.75, 'an empty exclusion set excludes nothing')
+})
